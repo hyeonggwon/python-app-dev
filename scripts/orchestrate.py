@@ -618,27 +618,9 @@ def run_stage(stage: str, run_dir: Path, phase: int | None, resume: bool) -> int
     state["counters"]["total_stages"] += 1
     save_state(run_dir, state)
 
-    # Pre-stage hook for lint-test: run gates before invoking LLM, embed JSON paths
+    # lint-test owns its own self-correction loop (gate-run → LLM round → re-run → cap).
     if stage == "lint-test":
-        gate_results = run_lint_test_gates(run_dir, phase, state, eff)
-        # If all gates passed already, skip LLM and proceed
-        if all(g["passed"] for g in gate_results):
-            primary = stage_primary_output(run_dir, stage, phase)
-            primary.parent.mkdir(parents=True, exist_ok=True)
-            primary.write_text(
-                f"# lint-test (auto)\n\nAll gates passed without LLM intervention.\n\n"
-                f"{STAGE_MARKER[stage]}: {primary}\n",
-                encoding="utf-8",
-            )
-            state["stage_outputs"][stage_key(stage, phase)] = str(primary)
-            save_state(run_dir, state)
-            emit_result("pass", stage=stage, phase=phase, output=str(primary))
-            return 0
-        # else: fall through to LLM with feedback embedding
-        feedback_body = "Gate results:\n" + "\n".join(
-            f"- {g['name']}: passed={g['passed']} (file: {g['_path']})" for g in gate_results
-        )
-        write_feedback(stage_dir(run_dir, stage, phase), "gate-results", feedback_body)
+        return run_lint_test_loop(run_dir, phase, state, eff)
 
     prompt = materialize_prompt(stage, run_dir, phase, state, eff)
 
@@ -678,6 +660,10 @@ def run_stage(stage: str, run_dir: Path, phase: int | None, resume: bool) -> int
         emit_result("escalated", trigger="missing_aux", stage=stage, phase=phase, missing=missing)
         return 3
 
+    # sanity-test owns the deterministic post-LLM gate (route() reads gates/sanity.json).
+    if stage == "sanity-test":
+        run_sanity_gate(run_dir, phase, state)
+
     # Stage-specific routing
     state["stage_outputs"][stage_key(stage, phase)] = str(sd / STAGE_PRIMARY_OUTPUT[stage])
     save_state(run_dir, state)
@@ -690,18 +676,21 @@ def stage_key(stage: str, phase: int | None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# lint-test gate runner
+# Gate runners
 # ---------------------------------------------------------------------------
+
+LINT_TEST_GATES = ["install", "lint", "format", "types", "tests", "coverage"]
+
 
 def run_lint_test_gates(run_dir: Path, phase: int | None, state: dict, eff: dict) -> list[dict]:
     workspace = resolve_workspace(state)
     if workspace is None or not workspace.exists():
-        # No workspace yet — skip gates (will be written as skipped in run_gate.py? no, just empty)
+        # No workspace yet — return empty; caller treats this as gates-incomplete (escalates).
         return []
     toolchain_path = run_dir / "interview" / "toolchain.json"
     threshold = eff.get("coverage_threshold", 70)
     results: list[dict] = []
-    for gate in ["install", "lint", "format", "types", "tests", "coverage"]:
+    for gate in LINT_TEST_GATES:
         cmd = [
             sys.executable,
             str(harness_root() / "scripts" / "run_gate.py"),
@@ -714,13 +703,131 @@ def run_lint_test_gates(run_dir: Path, phase: int | None, state: dict, eff: dict
             cmd += ["--toolchain", str(toolchain_path)]
         if gate == "coverage":
             cmd += ["--threshold", str(threshold)]
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        subprocess.run(cmd, capture_output=True, text=True)
         gate_path = run_dir / f"phase-{phase}" / "gates" / f"{gate}.json"
         if gate_path.exists():
             data = json.loads(gate_path.read_text(encoding="utf-8"))
             data["_path"] = str(gate_path)
             results.append(data)
     return results
+
+
+def run_sanity_gate(run_dir: Path, phase: int | None, state: dict) -> dict | None:
+    """Run the deterministic sanity gate after the sanity-test LLM stage finishes.
+
+    The LLM authors and runs the tests itself, but route() consumes
+    gates/sanity.json — only this function writes it. Returns the gate dict
+    (or None when the workspace is unresolvable).
+    """
+    workspace = resolve_workspace(state)
+    if workspace is None or not workspace.exists():
+        return None
+    toolchain_path = run_dir / "interview" / "toolchain.json"
+    cmd = [
+        sys.executable,
+        str(harness_root() / "scripts" / "run_gate.py"),
+        "sanity",
+        "--run-dir", str(run_dir),
+        "--phase", str(phase),
+        "--workspace", str(workspace),
+    ]
+    if toolchain_path.exists():
+        cmd += ["--toolchain", str(toolchain_path)]
+    subprocess.run(cmd, capture_output=True, text=True)
+    gate_path = run_dir / f"phase-{phase}" / "gates" / "sanity.json"
+    if gate_path.exists():
+        return json.loads(gate_path.read_text(encoding="utf-8"))
+    return None
+
+
+def run_lint_test_loop(run_dir: Path, phase: int | None, state: dict, eff: dict) -> int:
+    """LLM-driven self-correction loop with a hard cap.
+
+    Each round:
+      1. Orchestrator runs all 6 gates.
+      2. If any expected gate JSON is missing → escalate (fail-closed).
+      3. If all pass → emit pass.
+      4. If counter+1 > cap → backtrack to design.
+      5. Otherwise: write feedback, invoke LLM round, validate marker/aux,
+         increment counter, then re-run gates.
+    """
+    stage = "lint-test"
+    caps = eff.get("caps", {})
+    cap = int(caps.get("lint_test_self_correct", 5))
+    counter_key = f"lint_test_self_correct__phase_{phase}"
+    sd = stage_dir(run_dir, stage, phase)
+    sd.mkdir(parents=True, exist_ok=True)
+    primary = stage_primary_output(run_dir, stage, phase)
+
+    while True:
+        gate_results = run_lint_test_gates(run_dir, phase, state, eff)
+        names = {g["name"] for g in gate_results}
+        missing_gates = sorted(set(LINT_TEST_GATES) - names)
+        if missing_gates:
+            return _escalate(
+                run_dir, state, "lint_test_gates_incomplete", stage, phase,
+                extra={"missing_gates": missing_gates,
+                       "hint": "run_gate.py failed to write JSON for these gates"},
+            )
+
+        all_passed = all(g["passed"] for g in gate_results)
+        if all_passed:
+            if not primary.exists():
+                primary.write_text(
+                    "# Lint/Test 자가 교정 로그\n\n"
+                    "All gates passed without LLM intervention.\n",
+                    encoding="utf-8",
+                )
+            state["stage_outputs"][stage_key(stage, phase)] = str(primary)
+            save_state(run_dir, state)
+            emit_result("pass", stage=stage, phase=phase, output=str(primary))
+            return 0
+
+        round_n = state["counters"][counter_key] + 1
+        if round_n > cap:
+            failing = [g["name"] for g in gate_results if not g["passed"]]
+            _backtrack_to(
+                run_dir, state, "design", phase, source="lint-test-cap",
+                body=f"lint-test self-correct cap ({cap}) reached.\nFailing gates: {failing}",
+            )
+            state["escalation_triggers"].append("lint_test_cap")
+            save_state(run_dir, state)
+            emit_result("loopback", to="design", phase=phase,
+                        count=round_n - 1, trigger="lint_test_cap")
+            return 0
+
+        feedback_body = (
+            f"Gate results (round {round_n}):\n"
+            + "\n".join(
+                f"- {g['name']}: passed={g['passed']} (file: {g['_path']})"
+                for g in gate_results
+            )
+        )
+        write_feedback(sd, f"gate-results-round-{round_n}", feedback_body)
+
+        prompt = materialize_prompt(stage, run_dir, phase, state, eff)
+        log_path = sd / f"headless-round-{round_n}.log"
+        rc, output = invoke_claude(prompt, stage, run_dir, phase, log_path, state)
+
+        if rc != 0:
+            return _escalate(
+                run_dir, state, "headless_failed", stage, phase,
+                extra={"round": round_n, "returncode": rc, "tail": output[-1000:]},
+            )
+        if not check_marker(output, STAGE_MARKER[stage]):
+            return _escalate(
+                run_dir, state, "missing_marker", stage, phase,
+                extra={"round": round_n},
+            )
+        if not primary.exists():
+            return _escalate(
+                run_dir, state, "missing_aux", stage, phase,
+                extra={"round": round_n, "missing": [STAGE_PRIMARY_OUTPUT[stage]]},
+            )
+
+        state["counters"][counter_key] = round_n
+        save_state(run_dir, state)
+        # loop continues — orchestrator re-runs gates next iteration
 
 
 # ---------------------------------------------------------------------------
