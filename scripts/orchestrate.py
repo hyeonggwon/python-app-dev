@@ -187,6 +187,33 @@ VERDICT_TO_LOOP = {
     "critical": {"escalation"},
 }
 
+# Gate status enum (run_gate.py is the writer; orchestrator is the reader).
+# Distinguishing skipped_ok from skipped_fail is what closed the
+# "tests/coverage skipped → silent pass" hole: previously every skip was
+# `passed=True`, so a workspace with no `tests/` directory looked identical
+# to a workspace whose tests passed.
+GATE_PASSING_STATUSES = {"passed", "skipped_ok"}
+GATE_FAILING_STATUSES = {"failed", "skipped_fail"}
+
+
+def gate_is_passing(gate: dict) -> bool:
+    """Return True iff a gate JSON represents a pass for routing purposes.
+
+    Reads the new ``status`` field if present; falls back to the legacy
+    ``passed`` bool for forward/back compat with older gate JSONs that may
+    still be on disk from a previous run.
+    """
+    status = (gate.get("status") or "").strip()
+    if status in GATE_PASSING_STATUSES:
+        return True
+    if status in GATE_FAILING_STATUSES:
+        return False
+    return bool(gate.get("passed"))
+
+
+def gates_all_passing(gates: list[dict]) -> bool:
+    return all(gate_is_passing(g) for g in gates)
+
 
 # ---------------------------------------------------------------------------
 # Paths and config
@@ -965,7 +992,7 @@ def run_lint_test_loop(run_dir: Path, phase: int | None, state: dict, eff: dict)
                        "hint": "run_gate.py failed to write JSON for these gates"},
             )
 
-        all_passed = all(g["passed"] for g in gate_results)
+        all_passed = gates_all_passing(gate_results)
         if all_passed:
             if not primary.exists():
                 primary.write_text(
@@ -980,7 +1007,7 @@ def run_lint_test_loop(run_dir: Path, phase: int | None, state: dict, eff: dict)
 
         round_n = state["counters"][counter_key] + 1
         if round_n > cap:
-            failing = [g["name"] for g in gate_results if not g["passed"]]
+            failing = [g["name"] for g in gate_results if not gate_is_passing(g)]
             _backtrack_to(
                 run_dir, state, "design", phase, source="lint-test-cap",
                 body=f"lint-test self-correct cap ({cap}) reached.\nFailing gates: {failing}",
@@ -999,7 +1026,7 @@ def run_lint_test_loop(run_dir: Path, phase: int | None, state: dict, eff: dict)
         feedback_body = (
             f"Gate results (round {round_n}):\n"
             + "\n".join(
-                f"- {g['name']}: passed={g['passed']} (file: {g['_path']})"
+                f"- {g['name']}: status={g.get('status', '?')} (file: {g['_path']})"
                 for g in gate_results
             )
         )
@@ -1077,7 +1104,11 @@ def route(stage: str, run_dir: Path, phase: int | None, state: dict, eff: dict) 
             emit_result("escalated", trigger="verdict_invalid", reason=msg)
             return 3
 
-        # Cross-check: any failed gate but verdict pass → escalate (objective wins)
+        # Cross-check: any failed gate but verdict pass → escalate (objective wins).
+        # `failed` here means status in {failed, skipped_fail}: a gate that
+        # was supposed to run but couldn't (e.g., tests/ missing) is just as
+        # damning as a gate that ran and exited non-zero. See
+        # GATE_FAILING_STATUSES for the full enum.
         gates_dir = run_dir / f"phase-{phase}" / "gates"
         if gates_dir.exists() and data["verdict"] == "pass":
             for gp in gates_dir.glob("*.json"):
@@ -1093,10 +1124,11 @@ def route(stage: str, run_dir: Path, phase: int | None, state: dict, eff: dict) 
                     save_state(run_dir, state)
                     emit_result("escalated", trigger="gate_vs_verdict")
                     return 3
-                if gd.get("passed") is False:
+                if not gate_is_passing(gd):
                     write_escalation(run_dir, "gate_vs_verdict", {
                         "stage": stage, "phase": phase,
                         "failed_gate": gd.get("name", gp.stem),
+                        "gate_status": gd.get("status"),
                     })
                     state["escalation_triggers"].append("gate_vs_verdict")
                     state["status"] = "escalated"
@@ -1179,12 +1211,12 @@ def route(stage: str, run_dir: Path, phase: int | None, state: dict, eff: dict) 
         if not gate_path.exists():
             return _escalate(run_dir, state, "sanity_gate_missing", stage, phase)
         gd = json.loads(gate_path.read_text(encoding="utf-8"))
-        if not gd.get("passed"):
+        if not gate_is_passing(gd):
             ck = f"sanity__phase_{phase}"
             state["counters"][ck] += 1
             if state["counters"][ck] > caps.get("sanity_loop", 2):
                 return _escalate(run_dir, state, "sanity_cap", stage, phase)
-            if gd.get("skipped"):
+            if gd.get("status") == "skipped_fail" or gd.get("skipped"):
                 fb = (
                     f"sanity gate skipped — {gd.get('skip_reason')}. "
                     f"Add executable sanity tests under tests/sanity/."
@@ -1230,19 +1262,55 @@ def route(stage: str, run_dir: Path, phase: int | None, state: dict, eff: dict) 
 
 
 def _handle_resume(stage: str, run_dir: Path, phase: int | None, state: dict, caps: dict) -> int | None:
-    """Consume state.user_input after a prior awaiting_user gate.
+    """Consume state.user_input after a prior awaiting_user gate, OR re-run
+    the stage on `continue` from an escalation.
+
+    Two distinct entry conditions both arrive here via `--resume`:
+
+      A. state.status == "awaiting_user" — main session merged user_input
+         (decision: approve | revise | reject) and is asking us to consume
+         it. Empty/unknown decision is fail-closed (a main-session bug must
+         not silently bypass an intervention gate).
+
+      B. state.status == "escalated" — user wrote escalation.decision.md
+         with `decision: continue`; main session calls --resume without
+         populating state.user_input. We re-run the stage with cap counters
+         intact (SKILL.md §3: "cap 카운터는 그대로. cap 이 다시 초과되면
+         또 escalate"). Falls through to caller's re-run path.
 
     Returns:
       - 0  on approve (emits pass + route to next stage)
-      - 3  on reject / unknown decision / cap exceeded (escalates)
-      - None on revise (caller must fall through and re-run the stage)
+      - 3  on reject / unknown decision / cap exceeded / missing input
+      - None on revise OR escalation-continue (caller falls through and re-runs)
     """
     user_input = state.get("user_input") or {}
     decision = (user_input.get("decision") or "").strip().lower()
+    prior_status = state.get("status")
 
-    # Always consume the stale awaiting_user state — even if input is empty.
+    # Always consume the stale awaiting_user / escalation state — even if input
+    # is empty. After this _handle_resume call returns, the caller resets
+    # state.status to "running" via run_stage's normal flow.
     state["awaiting_input_schema"] = None
     state["user_input"] = {}
+
+    # ── Path B: continue from escalation ────────────────────────────────
+    # No decision in user_input, status was "escalated". Re-run the stage
+    # without resetting cap counters.
+    if not decision and prior_status == "escalated":
+        state["status"] = "running"
+        save_state(run_dir, state)
+        return None  # fall through to re-run
+
+    # ── Path A: awaiting_user resume ────────────────────────────────────
+    # Empty decision here means the main session forgot to merge user_input
+    # before calling --resume. Silent-passing would bypass the intervention
+    # gate without explicit consent — fail-closed.
+    if not decision:
+        return _escalate(
+            run_dir, state, "missing_user_decision", stage, phase,
+            extra={"prior_status": prior_status,
+                   "hint": "main session must merge state.user_input.decision before --resume"},
+        )
 
     # Reject ambiguous "approve + structured-revise-keys" (e.g.,
     # `decision: approve` together with `add_requirements: [...]`). The
@@ -1259,7 +1327,7 @@ def _handle_resume(stage: str, run_dir: Path, phase: int | None, state: dict, ca
                        "hint": "remove these keys, or change decision to 'revise'"},
             )
 
-    if not decision or decision == "approve":
+    if decision == "approve":
         # Run-level stages share run_dir as their stage_dir. If the user
         # revised once and then approved, feedback.md from the revise round
         # would still be visible to the *next* run-level stage. Clear it.
@@ -1290,6 +1358,16 @@ def _handle_resume(stage: str, run_dir: Path, phase: int | None, state: dict, ca
                     run_dir, state, f"{cap_key}_cap", stage, phase,
                     extra={"count": state["counters"][counter_key], "cap": cap},
                 )
+        # Reset the in-stage retry counter for this stage. A user revise is
+        # a fresh attempt at the stage from the user's perspective; without
+        # this, prior architect-reviewer self-loops in the same phase would
+        # pre-burn the cap and force an escalation on the very next pass.
+        # Mirrors the reset logic in _backtrack_to (which clears these on
+        # any backtrack into this stage) — keeping the two paths symmetric.
+        if phase is not None:
+            counter_base = IN_STAGE_RETRY_COUNTERS.get(stage)
+            if counter_base:
+                state["counters"][f"{counter_base}__phase_{phase}"] = 0
         sd = stage_dir(run_dir, stage, phase)
         write_feedback(sd, f"{stage}-user-revise", _render_user_feedback(user_input))
         # Clear stale outputs so the LLM regenerates them this round.
@@ -1339,6 +1417,14 @@ def _intervention_schema_for(stage: str) -> dict:
 
 
 def _default_next_stage(stage: str, phase: int | None, state: dict | None = None) -> str | None:
+    """Next stage in the canonical flow, or None when the phase/run ends.
+
+    `None` is the documented signal (SKILL.md §1: "없으면 다음 phase 또는
+    delivery") for the main session to advance the phase counter or invoke
+    delivery. Earlier revisions returned a sentinel string
+    `"next-phase-or-delivery"` which is not a valid stage name and silently
+    broke the contract — main session would interpret it as a stage to call.
+    """
     seq_run = ["planning", "requirements", "phase-split"]
     seq_phase = ["design", "branch-create", "implement", "lint-test", "code-review",
                  "sanity-test", "document", "pr-create", "pr-publish"]
@@ -1356,9 +1442,9 @@ def _default_next_stage(stage: str, phase: int | None, state: dict | None = None
             if nxt == "pr-publish":
                 pr_mode = ((state or {}).get("interview_spec") or {}).get("pr_mode", "auto")
                 if str(pr_mode).lower() == "manual":
-                    return "next-phase-or-delivery"
+                    return None
             return nxt
-        return "next-phase-or-delivery"
+        return None
     if stage == "delivery":
         return None
     return None
@@ -1383,7 +1469,13 @@ def _read_front_matter_field(path: Path, field: str) -> str | None:
             # otherwise fail enum membership checks downstream.
             if "#" in value:
                 value = value.split("#", 1)[0]
-            return value.strip()
+            value = value.strip()
+            # Strip a single matched pair of YAML quotes. ``verdict: "pass"``
+            # is legal YAML; without this the enum check sees `'"pass"'` and
+            # fails, escalating verdict_invalid for what is semantically valid.
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                value = value[1:-1]
+            return value
     return None
 
 

@@ -44,6 +44,30 @@ GATE_TIMEOUT_SECONDS = {
     "sanity":   900,
 }
 
+# Status enum (orchestrator reads `status` field in each gate JSON).
+#
+#   passed       — command ran and exited 0 (and threshold met, where applicable)
+#   failed       — command ran and exited non-zero, OR coverage below threshold,
+#                  OR timed out
+#   skipped_ok   — make_command returned None and that's expected/benign
+#                  (e.g., the project's linter is something we don't recognize;
+#                  the LLM code-review will still cover it)
+#   skipped_fail — make_command returned None but the gate is essential and
+#                  cannot be silently bypassed (no tests/ for tests/coverage,
+#                  unknown packaging for install, no tests/sanity/ for sanity)
+#
+# Earlier revisions collapsed (skipped_ok, skipped_fail) into `passed=True,
+# skipped=True`, which let workspaces with no unit tests pass through the
+# lint-test gate set. The split closes that hole; orchestrator's
+# gate_is_passing() now treats skipped_fail as failing.
+GATE_STATUS_VALUES = {"passed", "failed", "skipped_ok", "skipped_fail"}
+
+# Gates whose absence is not a fail. Anything not listed here, when its
+# command is None, is `skipped_fail` (fail-closed). Sanity is always
+# fail-closed so it isn't in the set; install is fail-closed because
+# downstream gates depend on it.
+SKIP_OK_WHEN_NO_COMMAND = {"lint", "format", "types"}
+
 
 def now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
@@ -204,27 +228,52 @@ def run_gate(gate: str, run_dir: Path, phase: int, workspace: Path, toolchain: d
                 pass
 
     if cmd is None:
-        # sanity gate must have something to run — a missing tests/sanity/ is a
-        # fail, not a silent pass. design loopback will surface the gap.
-        is_passed = gate != "sanity"
-        result = {
+        # Decide skipped_ok vs skipped_fail:
+        #   - lint/format/types → skipped_ok (project may legitimately not
+        #     use the recognized tool; LLM code-review still covers quality)
+        #   - everything else → skipped_fail (essential gate; missing means
+        #     we cannot certify correctness — surface it to the orchestrator
+        #     so design loopback can address the gap)
+        if gate in SKIP_OK_WHEN_NO_COMMAND:
+            status = "skipped_ok"
+            is_passed = True
+        else:
+            status = "skipped_fail"
+            is_passed = False
+
+        if gate == "sanity":
+            skip_reason = (
+                f"sanity gate has nothing to run — workspace lacks tests/sanity/ "
+                f"or toolchain test={toolchain.get('test')!r} not supported"
+            )
+        elif gate in ("tests", "coverage"):
+            skip_reason = (
+                f"{gate} gate has nothing to run — workspace lacks unit test target "
+                f"(tests/unit/ or tests/) for toolchain test={toolchain.get('test')!r}"
+            )
+        elif gate == "install":
+            skip_reason = (
+                f"install gate cannot run — toolchain packaging "
+                f"={toolchain.get('packaging')!r} is not supported"
+            )
+        else:
+            skip_reason = (
+                f"no command for gate '{gate}' with toolchain "
+                f"{toolchain.get('test')}/{toolchain.get('linter')}"
+            )
+
+        return {
             "name": gate,
+            "status": status,
             "command": None,
             "exit_code": None,
             "passed": is_passed,
             "skipped": True,
-            "skip_reason": (
-                f"sanity gate has nothing to run — workspace lacks tests/sanity/ "
-                f"or toolchain test={toolchain.get('test')!r} not supported"
-                if gate == "sanity"
-                else f"no command for gate '{gate}' with toolchain "
-                     f"{toolchain.get('test')}/{toolchain.get('linter')}"
-            ),
+            "skip_reason": skip_reason,
             "started_at": started,
             "finished_at": now_iso(),
             "summary": {},
         }
-        return result
 
     timeout = GATE_TIMEOUT_SECONDS.get(gate, 600)
     try:
@@ -238,6 +287,7 @@ def run_gate(gate: str, run_dir: Path, phase: int, workspace: Path, toolchain: d
     except subprocess.TimeoutExpired as e:
         return {
             "name": gate,
+            "status": "failed",
             "command": " ".join(shlex.quote(c) for c in cmd),
             "exit_code": None,
             "passed": False,
@@ -270,6 +320,7 @@ def run_gate(gate: str, run_dir: Path, phase: int, workspace: Path, toolchain: d
 
     return {
         "name": gate,
+        "status": "passed" if passed else "failed",
         "command": " ".join(shlex.quote(c) for c in cmd),
         "exit_code": proc.returncode,
         "passed": passed,

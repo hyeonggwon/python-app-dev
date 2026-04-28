@@ -36,6 +36,11 @@ What it checks (each block has a `check_*` function):
       (planning, requirements, phase-split, design, pr-create). Note: this
       check confirms branch coverage only; cross-checking the schema dict
       keys against `_handle_resume`'s reads is not currently performed.
+  13. Gate status enum: `run_gate.GATE_STATUS_VALUES` exactly partitions
+      into orchestrate's `GATE_PASSING_STATUSES` and `GATE_FAILING_STATUSES`.
+  14. `route()` consults gate pass/fail through `gate_is_passing()`, not by
+      reading the legacy `passed` bool directly (which would treat
+      `skipped_fail` as a pass).
 
 The script is invoked from the repo root and inspects:
   - scripts/orchestrate.py            (parsed via AST)
@@ -480,6 +485,95 @@ def check_no_absolute_paths(fails: Failures) -> None:
             )
 
 
+def _module_constants(path: Path, names: set[str]) -> dict[str, object]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    out: dict[str, object] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            tgt = node.targets[0]
+            if isinstance(tgt, ast.Name) and tgt.id in names:
+                try:
+                    out[tgt.id] = ast.literal_eval(node.value)
+                except ValueError:
+                    pass
+    return out
+
+
+def check_gate_status_enum_consistency(fails: Failures) -> None:
+    """The four-value status enum must agree across run_gate.py and orchestrate.py.
+
+    run_gate.py emits one of GATE_STATUS_VALUES on every gate JSON. orchestrate.py
+    reads them via gate_is_passing(), which classifies statuses into
+    GATE_PASSING_STATUSES vs GATE_FAILING_STATUSES. If the two sets drift, a status
+    name will silently fall through to the legacy `passed` bool, re-introducing
+    the dual-truth bug the enum was added to fix.
+    """
+    rg = _module_constants(ROOT / "scripts" / "run_gate.py", {"GATE_STATUS_VALUES"})
+    orch = _module_constants(
+        ORCHESTRATOR, {"GATE_PASSING_STATUSES", "GATE_FAILING_STATUSES"}
+    )
+    enum_values = rg.get("GATE_STATUS_VALUES")
+    passing = orch.get("GATE_PASSING_STATUSES")
+    failing = orch.get("GATE_FAILING_STATUSES")
+    if enum_values is None:
+        fails.add("run_gate.py: GATE_STATUS_VALUES not parsed")
+        return
+    if passing is None or failing is None:
+        fails.add("orchestrate.py: GATE_PASSING_STATUSES / GATE_FAILING_STATUSES not parsed")
+        return
+    classified = set(passing) | set(failing)
+    enum_set = set(enum_values)
+    extra_classified = classified - enum_set
+    unclassified = enum_set - classified
+    overlap = set(passing) & set(failing)
+    if extra_classified:
+        fails.add(
+            f"orchestrate.py classifies statuses not in run_gate.GATE_STATUS_VALUES: "
+            f"{sorted(extra_classified)}"
+        )
+    if unclassified:
+        fails.add(
+            f"run_gate.GATE_STATUS_VALUES contains statuses neither passing nor failing in "
+            f"orchestrate.py: {sorted(unclassified)}"
+        )
+    if overlap:
+        fails.add(
+            f"orchestrate.py: status classified as both passing and failing: {sorted(overlap)}"
+        )
+
+
+def check_gate_routing_uses_helper(fails: Failures) -> None:
+    """Routing branches in orchestrate.py.route() must read gate pass/fail
+    through gate_is_passing(), not by inspecting the legacy `passed` bool.
+    The bool is kept as a tie-breaker only for cases where `status` is missing
+    (older fixture data); production code paths must go through the helper so
+    that `skipped_fail` is never confused with `passed=True`.
+    """
+    text = ORCHESTRATOR.read_text(encoding="utf-8")
+    tree = ast.parse(text)
+    route_fn: ast.FunctionDef | None = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "route":
+            route_fn = node
+            break
+    if route_fn is None:
+        fails.add("orchestrate.py: route() not found")
+        return
+    # Collect any `gd.get("passed")` / `gate.get("passed")` style checks inside route().
+    bad: list[int] = []
+    for node in ast.walk(route_fn):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr == "get" and node.args:
+                arg = node.args[0]
+                if isinstance(arg, ast.Constant) and arg.value == "passed":
+                    bad.append(node.lineno)
+    if bad:
+        fails.add(
+            f"orchestrate.route() reads `.get('passed')` directly at line(s) "
+            f"{bad} — must use gate_is_passing() so skipped_fail is treated as a fail"
+        )
+
+
 def check_intervention_schema_wellformed(fails: Failures) -> None:
     """Verify _intervention_schema_for is total over the user-toggleable stages."""
     tree = ast.parse(ORCHESTRATOR.read_text(encoding="utf-8"))
@@ -525,6 +619,8 @@ CHECKS_NO_ORCH = [
     ("authority files exist",       check_authority_paths_exist),
     ("no absolute paths",           check_no_absolute_paths),
     ("intervention schema",         check_intervention_schema_wellformed),
+    ("gate status enum",            check_gate_status_enum_consistency),
+    ("gate routing uses helper",    check_gate_routing_uses_helper),
 ]
 
 
