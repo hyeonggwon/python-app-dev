@@ -46,6 +46,7 @@ STAGE_DIRS = {
   "sanity-test":   "phase-{N}",
   "document":      "phase-{N}",
   "pr-create":     "phase-{N}",
+  "pr-publish":    "phase-{N}",
   "delivery":      "",
 }
 ```
@@ -192,17 +193,31 @@ STAGE_DIRS = {
 | **사용자 개입** | (없음) |
 | **도구** | `Read, Write, Edit, Glob, Grep, Bash(git add:*, git commit:*, git status, git diff:*)` |
 
-## P8. `pr-create`
+## P8. `pr-create` (draft only)
 
 | 항목 | 값 |
 |---|---|
 | **Inputs** | tacit-knowledge, spec, design, implementation, review, sanity, docs-changes, branch.txt |
-| **Outputs** | `phase-{N}/pr.md` + (auto 모드면) `phase-{N}/pr-url.txt` |
-| **프롬프트 스케치** | PR 본문 작성: 제목 = 첫 커밋 제목과 동일 형식 (`<type>(<ticket>): <subject>` 또는 `<type>: <subject>`). 본문에 `## Summary`, `## Phase 산출물 링크`, `## Test plan`, `Refs:` 푸터. `pr_mode == auto`이면 `git push -u origin <branch>` + `gh pr create --title ... --body-file pr.md --base <base> [--reviewer ...] [--label ...]` 실행 후 PR URL을 `pr-url.txt`에 기록. `manual`이면 push/create는 사용자 책임. 마지막 줄 `PR_CREATE_DONE: ...` |
+| **Outputs** | `phase-{N}/pr.md` (제목은 본문 선두의 `<!-- pr-title: ... -->` HTML 코멘트에 박힘) |
+| **프롬프트 스케치** | PR 본문만 작성한다. `## Summary`, `## 변경 사항`, `## Phase 산출물`, `## Test plan`, `Refs:` 푸터. **`git push`/`gh pr create` 는 이 stage 에서 실행하지 않는다** — tool whitelist 도 그것을 허용하지 않는다. 실제 push/PR 생성은 사용자 개입 ⑤ 통과 후 `pr-publish` stage 에서 일어난다. 마지막 줄 `PR_CREATE_DONE: ...` |
 | **참조** | (없음) |
-| **검증** | (a) `pr.md` 존재 + 본문 형식 (b) `pr_mode == auto`면 `pr-url.txt` 존재 + 유효한 GitHub PR URL 정규식 (c) marker |
+| **검증** | (a) `pr.md` 존재 + 본문 형식 (b) marker |
 | **루프백 + cap** | 사용자 개입 ⑤ revise 시 자기 루프백 (cap=2, `pr_create_revise__phase_{N}`). 그 외 실패는 escalation |
-| **사용자 개입** | ⑤ `interventions.pr_per_phase == on`이면 **직후** (post-stage 승인). 기대 입력: `approve` / `revise(피드백)` |
+| **사용자 개입** | ⑤ `interventions.pr_per_phase == on`이면 **직후** (post-stage 승인). 기대 입력: `approve` / `revise(피드백)`. 승인 후 `pr_mode==auto` 면 `pr-publish` stage 진행, `pr_mode==manual` 이면 `pr-publish` 를 건너뛰고 다음 phase 또는 delivery 로 이동 |
+| **도구** | `Read, Write` |
+
+## P9. `pr-publish` (auto 모드 전용 — manual 에선 skip)
+
+| 항목 | 값 |
+|---|---|
+| **Inputs** | tacit-knowledge, spec, branch.txt, pr.md |
+| **Outputs** | `phase-{N}/pr-url.txt` |
+| **프롬프트 스케치** | (1) `pr.md` 선두의 `<!-- pr-title: ... -->` 코멘트에서 제목 추출 (2) HEAD 가 `branch.txt` 와 일치하는지 확인 (3) `git push -u origin <branch>` (4) `gh pr create --title <title> --body-file pr.md --base <base> [--reviewer ...] [--label ...]` (5) 출력된 PR URL 을 `pr-url.txt` 에 기록. 재시도 (예: backtrack 후 재진입) 로 PR 이 이미 존재하면 `gh pr view <branch> --json url --jq .url` 로 회수해 기록 — **PR 닫고 새로 만들지 않는다**. 마지막 줄 `PR_PUBLISH_DONE: ...` |
+| **참조** | (없음) |
+| **검증** | (a) `pr-url.txt` 존재 + 유효한 GitHub PR URL 정규식 (b) marker |
+| **라우팅** | `pr_mode == manual` 이면 orchestrator 가 이 stage 를 호출하지 않는다 (`_default_next_stage` 에서 `pr-create` 다음을 `next-phase-or-delivery` 로 단락) |
+| **루프백 + cap** | 자기 재실행 카운터 없음. 실패 시 escalation |
+| **사용자 개입** | (없음 — 사용자 검토는 ⑤ 에서 끝) |
 | **도구** | `Read, Write, Bash(git push:*, git rev-parse:*, gh pr:*, gh repo:*)` |
 
 ---
@@ -277,12 +292,13 @@ VERDICT_TO_LOOP = {
 }
 ```
 
-(`branch-create`, `implement`, `document`, `pr-create` 자기 재실행 카운터는 두지 않는다 — 위 stage 들은 자기 루프백 루트가 없고, 실패 시 곧장 escalation 으로 빠진다.)
+(`branch-create`, `implement`, `document`, `pr-create`, `pr-publish` 자기 재실행 카운터는 두지 않는다 — 위 stage 들은 자기 루프백 루트가 없고, 실패 시 곧장 escalation 으로 빠진다. `pr-create` 의 `pr_create_revise` 는 user-revise 누적 카운터로 별도.)
 
 `total_stages`는 runaway cap (전역). 도달 + 마지막 verdict=pass면 정상 종료, 도달 + 비-pass면 escalation.
 
 Backtrack 시 동작:
-- **stage 산출물**: target 다음 stage들의 `STAGE_OWNED_PATTERNS` (LLM 산출물 + 해당 stage 가 소유한 게이트 JSON 포함, 예: lint-test 의 `gates/install.json`, sanity-test 의 `gates/sanity.json`)을 unlink.
-- **stage_outputs**: target 이후 stage 의 항목만 pop (target 자체는 보존 — revise 시 LLM 이 기존 산출물을 참고해 수정).
+- **stage 산출물**: target stage 와 그 이후 stage 들의 `STAGE_OWNED_PATTERNS` (LLM 산출물 + 해당 stage 가 소유한 게이트 JSON 포함, 예: lint-test 의 `gates/install.json`, sanity-test 의 `gates/sanity.json`)을 모두 unlink. target 자체도 청소하는 이유: 이전 라운드의 primary 산출물 (예: `verdict: pass` 가 박힌 design.md) 이 그대로 남으면 LLM 이 덮어쓰지 못한 경우 post-stage 라우팅이 그 stale 값으로 단락된다. user-revise 경로도 동일하게 target 의 `STAGE_OWNED_PATTERNS` 를 청소한다 (두 경로 동일 의미).
+- **stage_outputs**: target 과 그 이후 stage 의 항목 모두 pop.
 - **in-stage 카운터**: target 과 cleared stage 들의 `IN_STAGE_RETRY_COUNTERS` 만 0 으로 리셋 (verdict 누적 카운터 `code_review_minor/major`, user-revise 카운터는 cumulative 유지).
 - **verdict_history**: `code-review-*` 가 트리거한 backtrack 일 때만 마지막 엔트리 1개 pop. `lint-test-cap` 이나 `sanity-fail` backtrack 은 verdict_history 를 건드리지 않는다 (그 두 경로는 verdict 를 추가하지 않으므로 pop 하면 직전 phase 의 무관한 verdict 를 잃게 된다).
+- **공유 feedback.md**: phase-level stage 들의 `feedback.md` 는 phase 디렉토리 공유라 `STAGE_OWNED_PATTERNS` 의 어느 항목에도 들어있지 않다. 즉 backtrack/revise 청소 후에도 살아남고, 그 직후 새 피드백이 append 된다.

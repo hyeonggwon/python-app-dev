@@ -25,15 +25,38 @@ Read `jira_ticket` from `{spec_path}` front-matter:
 
 ### Steps
 
-1. **Backtrack-safe reuse**: run `git rev-parse --abbrev-ref HEAD`. If HEAD is already on a branch
-   matching this phase's expected pattern (`dev_matthew_<ticket>_NN` for the current ticket, or
-   `<change_kind>/<keyword>` for ticketless), skip name-allocation and reuse the current branch.
-   This prevents NN drift on backtrack — code-review major → design → branch-create reruns must
-   stay on the same branch we already pushed commits to.
-2. Otherwise determine branch name per rules.
-3. Run `git rev-parse --verify --quiet <branch>` — if exists locally, `git switch <branch>`. Else `git switch -c <branch>` (or `git checkout -b <branch>`).
-4. Confirm with `git rev-parse --abbrev-ref HEAD`.
-5. Write the branch name (one line, no trailing newline) to `{stage_dir}/branch.txt`.
+1. **Backtrack-safe reuse (this-phase only)**: if `{stage_dir}/branch.txt` already
+   exists, read its single-line value `<existing>` and run
+   `git switch <existing>`. Confirm with `git rev-parse --abbrev-ref HEAD` and
+   stop — do not allocate a new name, do not touch base. This is the only
+   reuse path: it triggers when code-review-major / sanity-fail backtrack
+   then re-enters branch-create within the *same* phase. We must stay on the
+   branch we already pushed commits to.
+
+2. **Fresh phase — branch off base, never off a previous phase's branch**.
+   This is the critical rule: on phase 2's first entry, HEAD is still on
+   phase 1's branch. If we created phase 2's branch from there, phase 2's PR
+   would include all of phase 1's commits, violating the "each phase
+   independently PR-able" policy in tacit-knowledge §3.
+
+   Read `pr_base_branch` from `{spec_path}` (default `main` if absent).
+   - `git rev-parse --verify --quiet <base>` to test local existence.
+   - If exists: `git switch <base>` (or `git checkout <base>`).
+   - If not (e.g., a `mode=new` workspace that was freshly initialized and
+     has no commits or branches yet): skip the base switch — the new branch
+     will inherit the unborn / current HEAD. Do **not** error.
+
+3. Determine the new branch name per the naming rules above.
+
+4. Create or switch:
+   - `git rev-parse --verify --quiet <branch>` — if exists locally,
+     `git switch <branch>`.
+   - Else `git switch -c <branch>` (or `git checkout -b <branch>`).
+
+5. Confirm with `git rev-parse --abbrev-ref HEAD`.
+
+6. Write the branch name (one line, no trailing newline) to
+   `{stage_dir}/branch.txt`.
 
 ## Constraints
 

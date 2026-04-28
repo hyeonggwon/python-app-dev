@@ -1,4 +1,4 @@
-# Stage: pr-create (phase {N})
+# Stage: pr-create (phase {N}) — draft only
 
 ## Inputs
 
@@ -11,11 +11,17 @@
 7. `{stage_dir}/docs-changes.md`
 8. `{stage_dir}/branch.txt`
 
-Workspace cwd: `{workspace}`.
-
 ## Task
 
-Compose the PR description and (in `auto` mode) push + open the PR via `gh`.
+**Compose the PR description only.** This stage writes `pr.md` and stops.
+The actual `git push` + `gh pr create` happens in the separate `pr-publish`
+stage (auto mode) AFTER the user approves this draft via the
+`pr_per_phase` intervention. Splitting draft/publish is what makes the
+intervention useful — if push happened here and the user then asked to
+revise, re-running this stage would try to open a PR that already exists.
+
+In `pr_mode == manual`, the user pushes and opens the PR themselves; the
+orchestrator skips `pr-publish` entirely.
 
 ### Title
 
@@ -24,11 +30,20 @@ Use the same format as the first commit's subject:
 - Ticketed: `<type>(<jira-ticket>): <subject>`
 - Ticketless: `<type>: <subject>`
 
-`<subject>` 50자 이내. Use the phase title from `phases.md` (or the most representative commit subject).
+`<subject>` 50자 이내. Use the phase title from `phases.md` (or the most
+representative commit subject). Write the title as the first line of
+`pr.md` after the body, in a `<!-- pr-title: ... -->` HTML comment so
+`pr-publish` can read it without the user having to retype it:
+
+```markdown
+<!-- pr-title: feat(MAE1-123): JWT 로그인 추가 -->
+```
 
 ### Body — write to `{stage_dir}/pr.md`
 
 ```markdown
+<!-- pr-title: <title> -->
+
 ## Summary
 - (1~3 bullets, 사용자 가치 위주)
 
@@ -50,24 +65,14 @@ Use the same format as the first commit's subject:
 Refs: <jira-ticket>     # 티켓 있을 때만
 ```
 
-### Push & create (only when `pr_mode == auto`)
-
-1. `git rev-parse --abbrev-ref HEAD` to confirm current branch matches `branch.txt`.
-2. `git push -u origin "$(cat {stage_dir}/branch.txt)"`.
-3. `gh pr create --title "<title>" --body-file {stage_dir}/pr.md --base "<pr_base_branch>"` plus:
-   - `--reviewer alice --reviewer bob` for each in `pr_reviewers`
-   - `--label foo --label bar` for each in `pr_labels`
-4. Capture the printed PR URL and write it (one line, no trailing newline) to `{stage_dir}/pr-url.txt`.
-
-### Manual mode (`pr_mode == manual`)
-
-- Do NOT push. Do NOT create the PR.
-- Just write `{stage_dir}/pr.md` with the same body. The user will push and open the PR themselves.
-
 ## Constraints
 
-- Never `git push --force`. Never delete remote branches.
-- Never use `gh pr create` flags this prompt didn't specify.
+- Do NOT run `git push` in this stage.
+- Do NOT run `gh pr create` in this stage.
+- Both commands are reserved for the separate `pr-publish` stage. The tool
+  whitelist for `pr-create` no longer permits them, and any attempt will
+  fail with a permission error.
+- Do not modify any source files.
 - 한국어 본문.
 
 ## Output

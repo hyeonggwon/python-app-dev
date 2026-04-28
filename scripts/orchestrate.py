@@ -57,6 +57,7 @@ STAGE_DIRS = {
     "sanity-test":   "phase-{N}",
     "document":      "phase-{N}",
     "pr-create":     "phase-{N}",
+    "pr-publish":    "phase-{N}",
     "delivery":      "",
 }
 
@@ -99,6 +100,9 @@ STAGE_TOOLS = {
     ],
     "pr-create": [
         "Read", "Write",
+    ],
+    "pr-publish": [
+        "Read", "Write",
         "Bash(git push:*)", "Bash(git rev-parse:*)",
         "Bash(gh pr:*)", "Bash(gh repo:*)",
     ],
@@ -126,6 +130,7 @@ STAGE_PRIMARY_OUTPUT = {
     "sanity-test":   "sanity.md",
     "document":      "docs-changes.md",
     "pr-create":     "pr.md",
+    "pr-publish":    "pr-url.txt",
     "delivery":      "delivery.md",
 }
 
@@ -156,7 +161,8 @@ STAGE_OWNED_PATTERNS = {
         "gates/sanity.json", "gates/sanity.stdout.txt", "gates/sanity.stderr.txt",
     ],
     "document":      ["docs-changes.md"],
-    "pr-create":     ["pr.md", "pr-url.txt"],
+    "pr-create":     ["pr.md"],
+    "pr-publish":    ["pr-url.txt"],
     "delivery":      ["delivery.md"],
 }
 
@@ -1024,10 +1030,22 @@ def route(stage: str, run_dir: Path, phase: int | None, state: dict, eff: dict) 
         gates_dir = run_dir / f"phase-{phase}" / "gates"
         if gates_dir.exists() and data["verdict"] == "pass":
             for gp in gates_dir.glob("*.json"):
-                gd = json.loads(gp.read_text(encoding="utf-8"))
+                try:
+                    gd = json.loads(gp.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as e:
+                    write_escalation(run_dir, "gate_vs_verdict", {
+                        "stage": stage, "phase": phase, "failed_gate": gp.stem,
+                        "reason": f"gate JSON unreadable: {e}",
+                    })
+                    state["escalation_triggers"].append("gate_vs_verdict")
+                    state["status"] = "escalated"
+                    save_state(run_dir, state)
+                    emit_result("escalated", trigger="gate_vs_verdict")
+                    return 3
                 if gd.get("passed") is False:
                     write_escalation(run_dir, "gate_vs_verdict", {
-                        "stage": stage, "phase": phase, "failed_gate": gd["name"]
+                        "stage": stage, "phase": phase,
+                        "failed_gate": gd.get("name", gp.stem),
                     })
                     state["escalation_triggers"].append("gate_vs_verdict")
                     state["status"] = "escalated"
@@ -1139,7 +1157,7 @@ def route(stage: str, run_dir: Path, phase: int | None, state: dict, eff: dict) 
     # Default: pass
     state["status"] = "running"
     save_state(run_dir, state)
-    emit_result("pass", stage=stage, phase=phase, next=_default_next_stage(stage, phase))
+    emit_result("pass", stage=stage, phase=phase, next=_default_next_stage(stage, phase, state))
     return 0
 
 
@@ -1168,7 +1186,7 @@ def _handle_resume(stage: str, run_dir: Path, phase: int | None, state: dict, ca
             (stage_dir(run_dir, stage, phase) / "feedback.md").unlink(missing_ok=True)
         state["status"] = "running"
         save_state(run_dir, state)
-        emit_result("pass", stage=stage, phase=phase, next=_default_next_stage(stage, phase))
+        emit_result("pass", stage=stage, phase=phase, next=_default_next_stage(stage, phase, state))
         return 0
 
     if decision == "reject":
@@ -1191,12 +1209,14 @@ def _handle_resume(stage: str, run_dir: Path, phase: int | None, state: dict, ca
                 )
         sd = stage_dir(run_dir, stage, phase)
         write_feedback(sd, f"{stage}-user-revise", _render_user_feedback(user_input))
-        # Clear stale outputs so the LLM regenerates them this round
-        primary = stage_primary_output(run_dir, stage, phase)
-        if primary.exists():
-            primary.unlink()
-        for aux in STAGE_REQUIRED_AUX_OUTPUTS.get(stage, []):
-            (sd / aux).unlink(missing_ok=True)
+        # Clear stale outputs so the LLM regenerates them this round.
+        # Use STAGE_OWNED_PATTERNS via clear_stage_outputs for parity with
+        # the backtrack path — STAGE_REQUIRED_AUX_OUTPUTS is only populated
+        # for code-review, so the previous primary+aux loop missed e.g.
+        # pr-create's pr-url.txt. feedback.md is not in any owned-patterns
+        # set, so the just-written user-revise feedback survives.
+        clear_stage_outputs(run_dir, [stage], phase)
+        state["stage_outputs"].pop(stage_key(stage, phase), None)
         state["status"] = "running"
         save_state(run_dir, state)
         return None  # fall through to re-run
@@ -1223,10 +1243,10 @@ def _intervention_schema_for(stage: str) -> dict:
     return {}
 
 
-def _default_next_stage(stage: str, phase: int | None) -> str | None:
+def _default_next_stage(stage: str, phase: int | None, state: dict | None = None) -> str | None:
     seq_run = ["planning", "requirements", "phase-split"]
     seq_phase = ["design", "branch-create", "implement", "lint-test", "code-review",
-                 "sanity-test", "document", "pr-create"]
+                 "sanity-test", "document", "pr-create", "pr-publish"]
     if stage in seq_run:
         idx = seq_run.index(stage)
         if idx + 1 < len(seq_run):
@@ -1235,7 +1255,14 @@ def _default_next_stage(stage: str, phase: int | None) -> str | None:
     if stage in seq_phase:
         idx = seq_phase.index(stage)
         if idx + 1 < len(seq_phase):
-            return seq_phase[idx + 1]
+            nxt = seq_phase[idx + 1]
+            # Skip pr-publish entirely in manual pr_mode — there's nothing to
+            # push and no PR to open. The user does it themselves from pr.md.
+            if nxt == "pr-publish":
+                pr_mode = ((state or {}).get("interview_spec") or {}).get("pr_mode", "auto")
+                if str(pr_mode).lower() == "manual":
+                    return "next-phase-or-delivery"
+            return nxt
         return "next-phase-or-delivery"
     if stage == "delivery":
         return None
@@ -1288,18 +1315,27 @@ def _render_issues(verdict: dict, key: str) -> str:
 
 
 def _backtrack_to(run_dir: Path, state: dict, target_stage: str, phase: int | None, source: str, body: str) -> None:
-    # 1. Decide which downstream stages to clear
+    # 1. Decide which stages to clear: target itself + everything after.
+    #    Clearing the target's owned outputs makes backtrack consistent with
+    #    the user-revise path (which also wipes the stage's outputs before
+    #    re-running) and prevents stale primary outputs (e.g., a previous
+    #    `verdict: pass` design.md) from short-circuiting post-stage routing
+    #    if the LLM fails to fully overwrite them.
     seq_phase = ["design", "branch-create", "implement", "lint-test", "code-review",
-                 "sanity-test", "document", "pr-create"]
+                 "sanity-test", "document", "pr-create", "pr-publish"]
     if target_stage not in seq_phase:
         return
     idx = seq_phase.index(target_stage)
-    to_clear = seq_phase[idx + 1:]  # everything after the target
+    downstream = seq_phase[idx + 1:]
+    to_clear = [target_stage, *downstream]
 
-    # 2. Clear LLM artifacts AND orchestrator-owned artifacts
+    # 2. Clear LLM artifacts AND orchestrator-owned artifacts.
+    #    feedback.md is shared across stages within a phase dir and is NOT in
+    #    any STAGE_OWNED_PATTERNS, so it survives this — we then append to it
+    #    in step 4 below.
     clear_stage_outputs(run_dir, to_clear, phase)
-    # gates dir is orchestrator-owned and tied to the phase, not a stage
-    # but we keep gates/ since later stages will rewrite them as needed.
+    # gates dir is orchestrator-owned and tied to the phase, not a stage —
+    # later stages rewrite their owned gate files as needed.
 
     # 3. Pop last verdict only when the backtrack was triggered by a
     #    verdict-appending stage. code-review is the only such stage today;
@@ -1312,7 +1348,7 @@ def _backtrack_to(run_dir: Path, state: dict, target_stage: str, phase: int | No
     # 4. Write feedback for the resume target stage
     write_feedback(stage_dir(run_dir, target_stage, phase), source, body)
 
-    # 5. Reset stage_outputs entries for cleared stages
+    # 5. Reset stage_outputs entries for cleared stages (including target)
     for s in to_clear:
         state["stage_outputs"].pop(stage_key(s, phase), None)
 
@@ -1323,7 +1359,7 @@ def _backtrack_to(run_dir: Path, state: dict, target_stage: str, phase: int | No
     #    Verdict-type counters (code_review_minor/major) and user-revise
     #    counters intentionally stay cumulative within the phase.
     if phase is not None:
-        for s in [target_stage, *to_clear]:
+        for s in to_clear:
             counter_base = IN_STAGE_RETRY_COUNTERS.get(s)
             if counter_base:
                 state["counters"][f"{counter_base}__phase_{phase}"] = 0

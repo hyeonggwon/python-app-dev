@@ -78,11 +78,12 @@ Phase-level (각 phase 마다 순서대로, `--phase N` 필수):
 8. `code-review`
 9. `sanity-test`
 10. `document`
-11. `pr-create`
+11. `pr-create` — PR 본문 (`pr.md`) 만 작성. push/gh 는 하지 않는다.
+12. `pr-publish` — `pr_mode==auto` 에서만 실행. `git push` + `gh pr create` 후 `pr-url.txt` 기록. `pr_mode==manual` 이면 orchestrator 가 자동으로 건너뛴다 (사용자가 직접 push).
 
 모든 phase 가 끝나면:
 
-12. `delivery` (run-level)
+13. `delivery` (run-level)
 
 ### 2-3. Phase 별 루프 분기
 
@@ -91,7 +92,7 @@ Phase-level (각 phase 마다 순서대로, `--phase N` 필수):
 | code-review verdict | loopback 대상 | 정리되는 산출물 |
 |---|---|---|
 | `pass` | (없음) → `sanity-test` | — |
-| `minor` | `implement` | implement 이후 모든 phase 산출물 (lint-test/code-review/sanity-test/document/pr-create) |
+| `minor` | `implement` | implement 이후 모든 phase 산출물 (lint-test/code-review/sanity-test/document/pr-create/pr-publish) |
 | `major` | `design` | design 이후 모든 phase 산출물 (branch-create 도 — 같은 브랜치는 유지되지만 새 commit 으로 덮음) |
 | `critical` | escalation | — |
 

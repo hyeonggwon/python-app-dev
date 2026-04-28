@@ -81,7 +81,8 @@ deep-interview
       → code-review       (sub-agent verdict)
       → sanity-test       (게이트 fail → design)
       → document
-      → pr-create         [개입 ⑤ 토글]
+      → pr-create         [개입 ⑤ 토글, draft only]
+      → pr-publish        (pr_mode=auto 만; manual 은 skip)
   → delivery
 ```
 
