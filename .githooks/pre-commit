@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Cross-file invariant checker — must pass before any commit lands.
+# Bypassing this hook (`--no-verify`) is forbidden by CLAUDE.md.
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+exec python3 "$ROOT/scripts/validate_harness.py"

@@ -1,0 +1,13 @@
+# Run outputs are per-execution artifacts; never tracked by the harness git.
+# Each run's workspace ({outputs}/<run-id>/workspace/) gets its own .git via
+# orchestrate.py:ensure_workspace_repo() so that workspace git operations
+# terminate inside the workspace and never walk up to this harness repo.
+outputs/
+
+# Python noise that may appear from local validator/linter runs against scripts/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage

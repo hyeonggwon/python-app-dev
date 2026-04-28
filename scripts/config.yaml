@@ -1,0 +1,43 @@
+# Default caps and thresholds.
+# Per-run overrides come from outputs/<run-id>/interview/spec.md `caps:` and `coverage_threshold:` etc.
+# This file is the source for default values; orchestrator merges defaults <- overrides into
+# {run_dir}/effective_thresholds.json (read by LLM review stages).
+
+caps:
+  # In-stage self correction
+  lint_test_self_correct: 5
+
+  # Code review verdict loops (per phase)
+  code_review_minor_loop: 3   # minor → implement
+  code_review_major_loop: 2   # major → design
+
+  # Sanity test failure → design loopback (per phase)
+  sanity_loop: 2
+
+  # Install gate failure → implement loopback (per phase)
+  install_loop: 3
+
+  # Self loops on user-intervention rejection
+  planning_revise: 2
+  requirements_revise: 2
+  phase_split_revise: 2
+  design_self: 2
+  pr_create_revise: 2
+
+  # Generic stage retry caps
+  branch_create_retry: 2
+  document_retry: 2
+
+  # Runaway cap (global, escalates only when paired with non-pass last verdict)
+  total_stages: 200
+
+thresholds:
+  coverage_threshold: 70
+  mypy_strict: false
+  pytest_parallel: false
+  sanity_scenarios_per_phase: 2
+
+stagnation:
+  # When N consecutive escalations match the same trigger pattern, surface
+  # cross-run history block in escalation.md.
+  history_window_runs: 10
