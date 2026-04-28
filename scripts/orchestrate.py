@@ -275,7 +275,11 @@ def ensure_phase_counters(state: dict, phase: int) -> None:
 IN_STAGE_RETRY_COUNTERS = {
     "design":      "design_arch_self",
     "lint-test":   "lint_test_self_correct",
-    "sanity-test": "sanity",
+    # sanity__phase_N is intentionally cumulative across backtracks: each
+    # sanity-fail → design loop iteration is a round of the *same* sanity
+    # loop, not a fresh in-stage attempt. Resetting it here would make the
+    # `sanity_loop` cap unreachable (the counter would be cleared on the very
+    # backtrack that just incremented it).
 }
 
 
@@ -981,7 +985,12 @@ def run_lint_test_loop(run_dir: Path, phase: int | None, state: dict, eff: dict)
                 run_dir, state, "design", phase, source="lint-test-cap",
                 body=f"lint-test self-correct cap ({cap}) reached.\nFailing gates: {failing}",
             )
-            state["escalation_triggers"].append("lint_test_cap")
+            # NOTE: do NOT append to escalation_triggers here. This is a
+            # loopback to design (a soft recovery path), not an escalation.
+            # delivery's final_status check treats any non-empty
+            # escalation_triggers as `escalated_recovered`, which would mark
+            # otherwise-clean runs as escalated and pollute outputs/.index.jsonl
+            # cross-run analytics.
             save_state(run_dir, state)
             emit_result("loopback", to="design", phase=phase,
                         count=round_n - 1, trigger="lint_test_cap")
@@ -1367,7 +1376,14 @@ def _read_front_matter_field(path: Path, field: str) -> str | None:
     fm = text[4:end]
     for line in fm.splitlines():
         if line.startswith(field + ":"):
-            return line.split(":", 1)[1].strip()
+            value = line.split(":", 1)[1]
+            # Strip YAML trailing comment. Prompt examples sometimes carry
+            # ``verdict: pass            # pass | needs_revision`` and an LLM
+            # may keep the comment when updating only the value, which would
+            # otherwise fail enum membership checks downstream.
+            if "#" in value:
+                value = value.split("#", 1)[0]
+            return value.strip()
     return None
 
 

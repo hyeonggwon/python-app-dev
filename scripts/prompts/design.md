@@ -23,7 +23,7 @@ The file must begin with a YAML front-matter block:
 ```markdown
 ---
 phase: {N}
-verdict: pass            # pass | needs_revision (set after self-review below)
+verdict: pass
 ---
 
 # 1. 모듈 구조
