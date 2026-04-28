@@ -255,9 +255,18 @@ def run_gate(gate: str, run_dir: Path, phase: int, workspace: Path, toolchain: d
 
     # coverage threshold check
     summary = parse_summary(gate, proc.stdout, workspace)
-    if gate == "coverage" and threshold is not None and "total" in summary:
-        passed = passed and (summary["total"] >= threshold)
+    if gate == "coverage" and threshold is not None:
         summary["threshold"] = threshold
+        if "total" in summary:
+            passed = passed and (summary["total"] >= threshold)
+        else:
+            # Fail-closed: pytest --cov exited 0 but .coverage.json was not
+            # produced or unparseable. Treating that as pass would silently
+            # bypass the configured threshold (e.g., when --cov-report config
+            # is overridden by a project conftest). Mark fail and surface the
+            # missing total so design loopback can address it.
+            passed = False
+            summary["threshold_missing_total"] = True
 
     return {
         "name": gate,

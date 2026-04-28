@@ -358,7 +358,12 @@ def materialize_prompt(stage: str, run_dir: Path, phase: int | None, state: dict
         "{stage_dir}": str(s_dir),
         "{phase}": str(phase) if phase is not None else "",
         "{N}": str(phase) if phase is not None else "",
-        "{prev}": str(phase - 1) if phase is not None and phase > 1 else "",
+        # phase=1 has no prior phase; resolve to a non-numeric sentinel so the
+        # path becomes obviously invalid (`phase-__none__/...`) instead of an
+        # empty-segment path (`phase-/...`) that looks like a real typo'd ref
+        # and might confuse the LLM. The design.md prompt's `(if N > 1)`
+        # qualifier already tells the LLM to skip this branch for phase=1.
+        "{prev}": str(phase - 1) if phase is not None and phase > 1 else "__none__",
         "{workspace}": str(workspace) if workspace else "",
         "{thresholds_path}": str(run_dir / "effective_thresholds.json"),
         "{spec_path}": str(run_dir / "interview" / "spec.md"),
@@ -674,9 +679,14 @@ def _append_run_index(state: dict, final_status: str) -> None:
         return
     index = harness_root() / "outputs" / ".index.jsonl"
     index.parent.mkdir(parents=True, exist_ok=True)
+    spec = state.get("interview_spec", {}) or {}
     entry = {
         "run_id": state.get("run_id"),
         "harness": state.get("harness", "python-app-dev"),
+        "mode": spec.get("mode"),
+        "project_kind": spec.get("project_kind"),
+        "jira_ticket": spec.get("jira_ticket"),
+        "total_phases": state.get("total_phases"),
         "final_status": final_status,
         "escalation_triggers": list(state.get("escalation_triggers", [])),
         "ended_at": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -917,6 +927,7 @@ def run_lint_test_loop(run_dir: Path, phase: int | None, state: dict, eff: dict)
     stage = "lint-test"
     caps = eff.get("caps", {})
     cap = int(caps.get("lint_test_self_correct", 5))
+    total_cap = int(caps.get("total_stages", 200))
     counter_key = f"lint_test_self_correct__phase_{phase}"
     sd = stage_dir(run_dir, stage, phase)
     sd.mkdir(parents=True, exist_ok=True)
@@ -968,6 +979,20 @@ def run_lint_test_loop(run_dir: Path, phase: int | None, state: dict, eff: dict)
         )
         write_feedback(sd, f"gate-results-round-{round_n}", feedback_body)
 
+        # Each LLM self-correction round is its own stage transition for the
+        # purposes of the global runaway cap. Without this, an LLM that loops
+        # forever fixing-then-breaking lint issues could rack up dozens of
+        # claude invocations while the outer cap (200) sits idle, since the
+        # outer cap is only hit on stage *re-entry* (run_stage line ~746).
+        state["counters"]["total_stages"] += 1
+        save_state(run_dir, state)
+        if state["counters"]["total_stages"] > total_cap:
+            return _escalate(
+                run_dir, state, "total_stages_cap", stage, phase,
+                extra={"total_stages": state["counters"]["total_stages"], "cap": total_cap,
+                       "context": f"lint-test self-correct round {round_n}"},
+            )
+
         prompt = materialize_prompt(stage, run_dir, phase, state, eff)
         log_path = sd / f"headless-round-{round_n}.log"
         rc, output = invoke_claude(prompt, stage, run_dir, phase, log_path, state)
@@ -1009,7 +1034,7 @@ def route(stage: str, run_dir: Path, phase: int | None, state: dict, eff: dict) 
         "requirements": interventions.get("requirements", True),
         "phase-split":  interventions.get("phase_split", True),
         "design":       interventions.get("design_per_phase", False),
-        "pr-create":    interventions.get("pr_per_phase", True),  # actually triggered before, but treated here as post-stage approval
+        "pr-create":    interventions.get("pr_per_phase", True),  # post-stage approval of pr.md draft (push happens in pr-publish)
     }
 
     # code-review: read verdict and route
@@ -1088,7 +1113,18 @@ def route(stage: str, run_dir: Path, phase: int | None, state: dict, eff: dict) 
     # design: self-loop on `verdict: needs_revision` in front matter
     if stage == "design":
         primary = stage_primary_output(run_dir, stage, phase)
-        verdict_in_design = (_read_front_matter_field(primary, "verdict") or "pass").strip().lower()
+        raw_verdict = _read_front_matter_field(primary, "verdict")
+        if raw_verdict is None:
+            # Fail-closed: missing front matter or absent verdict field means
+            # the architect-reviewer step was likely skipped. Defaulting to
+            # "pass" here would let a half-written design.md flow into
+            # branch-create. Surface it.
+            return _escalate(
+                run_dir, state, "verdict_invalid", stage, phase,
+                extra={"verdict": None, "reason": "front-matter `verdict` field missing",
+                       "valid": sorted(VALID_DESIGN_VERDICT_LABELS)},
+            )
+        verdict_in_design = raw_verdict.strip().lower()
         if verdict_in_design not in VALID_DESIGN_VERDICT_LABELS:
             return _escalate(
                 run_dir, state, "verdict_invalid", stage, phase,
@@ -1176,6 +1212,21 @@ def _handle_resume(stage: str, run_dir: Path, phase: int | None, state: dict, ca
     state["awaiting_input_schema"] = None
     state["user_input"] = {}
 
+    # Reject ambiguous "approve + structured-revise-keys" (e.g.,
+    # `decision: approve` together with `add_requirements: [...]`). The
+    # structured keys are only honored on revise; silently dropping them
+    # would lose the user's intent. Surface it as an escalation so the
+    # user can re-submit with a clear decision.
+    if decision == "approve":
+        revise_only = _REVISE_ONLY_KEYS.get(stage, set())
+        offending = sorted(k for k in user_input if k in revise_only)
+        if offending:
+            return _escalate(
+                run_dir, state, "ambiguous_user_input", stage, phase,
+                extra={"decision": "approve", "revise_only_keys_present": offending,
+                       "hint": "remove these keys, or change decision to 'revise'"},
+            )
+
     if not decision or decision == "approve":
         # Run-level stages share run_dir as their stage_dir. If the user
         # revised once and then approved, feedback.md from the revise round
@@ -1227,15 +1278,27 @@ def _handle_resume(stage: str, run_dir: Path, phase: int | None, state: dict, ca
     )
 
 
+_REVISE_ONLY_KEYS = {
+    "requirements": {"add_requirements", "remove_ids"},
+    "phase-split":  {"merge_phases", "split_phase", "reorder"},
+}
+
+
 def _intervention_schema_for(stage: str) -> dict:
+    # Note: structured keys other than `decision` and `feedback` are only
+    # consumed when `decision == revise`. Submitting them with `approve` is
+    # rejected by _handle_resume to prevent silent data loss.
     if stage == "planning":
         return {"decision": "approve|reject|revise", "feedback": "string"}
     if stage == "requirements":
         return {"decision": "approve|reject|revise", "feedback": "string",
-                "add_requirements": "list", "remove_ids": "list"}
+                "add_requirements": "list (revise only)",
+                "remove_ids": "list (revise only)"}
     if stage == "phase-split":
         return {"decision": "approve|reject|revise", "feedback": "string",
-                "merge_phases": "list[list]", "split_phase": "int", "reorder": "list[int]"}
+                "merge_phases": "list[list] (revise only)",
+                "split_phase": "int (revise only)",
+                "reorder": "list[int] (revise only)"}
     if stage == "design":
         return {"decision": "approve|revise", "feedback": "string"}
     if stage == "pr-create":
@@ -1333,7 +1396,16 @@ def _backtrack_to(run_dir: Path, state: dict, target_stage: str, phase: int | No
     #    feedback.md is shared across stages within a phase dir and is NOT in
     #    any STAGE_OWNED_PATTERNS, so it survives this — we then append to it
     #    in step 4 below.
-    clear_stage_outputs(run_dir, to_clear, phase)
+    #    EXCEPTION — branch-create's branch.txt: a backtrack to design within
+    #    the same phase must reuse the same git branch (each phase = one PR;
+    #    new commits land on the same ref). Wiping branch.txt would force
+    #    branch-create to allocate a new NN suffix on re-entry and leave the
+    #    prior branch dangling. The prompt's "Backtrack-safe reuse" path
+    #    requires branch.txt to survive. So we drop branch-create from the
+    #    file-clear list (its only owned pattern is branch.txt) but still
+    #    treat it as "in flight" for stage_outputs/counter resets below.
+    to_clear_files = [s for s in to_clear if s != "branch-create"]
+    clear_stage_outputs(run_dir, to_clear_files, phase)
     # gates dir is orchestrator-owned and tied to the phase, not a stage —
     # later stages rewrite their owned gate files as needed.
 
@@ -1348,8 +1420,10 @@ def _backtrack_to(run_dir: Path, state: dict, target_stage: str, phase: int | No
     # 4. Write feedback for the resume target stage
     write_feedback(stage_dir(run_dir, target_stage, phase), source, body)
 
-    # 5. Reset stage_outputs entries for cleared stages (including target)
-    for s in to_clear:
+    # 5. Reset stage_outputs entries for stages whose files we wiped.
+    #    branch-create's stage_outputs entry stays because branch.txt is
+    #    unchanged and still points to the live branch.
+    for s in to_clear_files:
         state["stage_outputs"].pop(stage_key(s, phase), None)
 
     # 6. Reset in-stage retry counters for the target stage and all cleared
@@ -1365,7 +1439,21 @@ def _backtrack_to(run_dir: Path, state: dict, target_stage: str, phase: int | No
                 state["counters"][f"{counter_base}__phase_{phase}"] = 0
 
 
+_VERDICT_DERIVED_ESCALATIONS = {
+    "code_review_critical",
+    "code_review_minor_cap",
+    "code_review_major_cap",
+}
+
+
 def _escalate(run_dir: Path, state: dict, trigger: str, stage: str, phase: int | None, extra: dict | None = None) -> int:
+    # Pop verdict_history when the escalation was triggered by a verdict that
+    # didn't get to complete its loop cycle. _backtrack_to already pops on
+    # successful backtrack (minor/major); without this, critical and cap-hit
+    # paths would leave the tail entry behind and skew per-phase analytics
+    # (the entry would look like a "settled outcome" even though it aborted).
+    if trigger in _VERDICT_DERIVED_ESCALATIONS and state.get("verdict_history"):
+        state["verdict_history"].pop()
     write_escalation(run_dir, trigger, {
         "stage": stage, "phase": phase, "extra": extra or {}
     })
