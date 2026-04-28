@@ -52,15 +52,9 @@ Update project documentation to reflect the changes made in this phase, then com
 - (의도적으로 그대로 둔 문서가 있다면 명시)
 ```
 
-If there are genuinely no docs to update, write:
-
-```markdown
-# 문서 변경 (phase {N})
-
-no doc change
-```
-
-(orchestrator detects this exact phrase and accepts it.)
+If there are genuinely no docs to update, still create `docs-changes.md` and explain why
+(예: "phase 가 내부 리팩터링만 다뤘고 사용자 노출 표면이 변하지 않았다"). orchestrator 는
+본문 형식을 강제하지 않고 marker 와 파일 존재만 검사한다 — 사람이 PR 리뷰에서 검토한다.
 
 ## Constraints
 

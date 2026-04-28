@@ -24,6 +24,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -133,14 +134,14 @@ def make_command(gate: str, toolchain: dict, workspace: Path) -> list[str] | Non
     return None
 
 
+_DIAG_LINE_RE = re.compile(r"^[^:]+:\d+:\d+:")
+
+
 def parse_summary(gate: str, stdout: str, workspace: Path) -> dict:
     """Best-effort summary extraction. Never raises — always returns a dict."""
     summary: dict = {}
     if gate == "lint" or gate == "format":
-        # Count lines that look like "file:line:col: code message"
-        errs = sum(1 for line in stdout.splitlines() if ": " in line and any(
-            c.isdigit() for c in line.split(":", 3)[1] if line.split(":", 3)[1:2]
-        ))
+        errs = sum(1 for line in stdout.splitlines() if _DIAG_LINE_RE.match(line))
         summary["errors"] = errs
     if gate == "tests":
         for line in reversed(stdout.splitlines()):
@@ -165,13 +166,22 @@ def run_gate(gate: str, run_dir: Path, phase: int, workspace: Path, toolchain: d
     started = now_iso()
 
     if cmd is None:
+        # sanity gate must have something to run — a missing tests/sanity/ is a
+        # fail, not a silent pass. design loopback will surface the gap.
+        is_passed = gate != "sanity"
         result = {
             "name": gate,
             "command": None,
             "exit_code": None,
-            "passed": True,  # skipped == passed (no signal)
+            "passed": is_passed,
             "skipped": True,
-            "skip_reason": f"no command for gate '{gate}' with toolchain {toolchain.get('test')}/{toolchain.get('linter')}",
+            "skip_reason": (
+                f"sanity gate has nothing to run — workspace lacks tests/sanity/ "
+                f"or toolchain test={toolchain.get('test')!r} not supported"
+                if gate == "sanity"
+                else f"no command for gate '{gate}' with toolchain "
+                     f"{toolchain.get('test')}/{toolchain.get('linter')}"
+            ),
             "started_at": started,
             "finished_at": now_iso(),
             "summary": {},

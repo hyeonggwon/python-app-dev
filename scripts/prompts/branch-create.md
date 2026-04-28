@@ -25,10 +25,15 @@ Read `jira_ticket` from `{spec_path}` front-matter:
 
 ### Steps
 
-1. Determine branch name per rules.
-2. Run `git rev-parse --verify --quiet <branch>` — if exists locally, `git switch <branch>`. Else `git switch -c <branch>` (or `git checkout -b <branch>`).
-3. Confirm with `git rev-parse --abbrev-ref HEAD`.
-4. Write the branch name (one line, no trailing newline) to `{stage_dir}/branch.txt`.
+1. **Backtrack-safe reuse**: run `git rev-parse --abbrev-ref HEAD`. If HEAD is already on a branch
+   matching this phase's expected pattern (`dev_matthew_<ticket>_NN` for the current ticket, or
+   `<change_kind>/<keyword>` for ticketless), skip name-allocation and reuse the current branch.
+   This prevents NN drift on backtrack — code-review major → design → branch-create reruns must
+   stay on the same branch we already pushed commits to.
+2. Otherwise determine branch name per rules.
+3. Run `git rev-parse --verify --quiet <branch>` — if exists locally, `git switch <branch>`. Else `git switch -c <branch>` (or `git checkout -b <branch>`).
+4. Confirm with `git rev-parse --abbrev-ref HEAD`.
+5. Write the branch name (one line, no trailing newline) to `{stage_dir}/branch.txt`.
 
 ## Constraints
 

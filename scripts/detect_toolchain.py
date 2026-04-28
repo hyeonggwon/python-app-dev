@@ -106,7 +106,9 @@ def detect_test(root: Path, pyproject: dict | None) -> str:
         return "pytest"
     if (root / "tox.ini").exists():
         return "tox"
-    if (root / "conftest.py").exists() or list((root / "tests").glob("test_*.py")) if (root / "tests").exists() else False:
+    if (root / "conftest.py").exists() or (
+        (root / "tests").is_dir() and any((root / "tests").glob("test_*.py"))
+    ):
         return "pytest"
     return "none"
 

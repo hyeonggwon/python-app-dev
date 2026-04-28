@@ -129,6 +129,37 @@ STAGE_PRIMARY_OUTPUT = {
     "delivery":      "delivery.md",
 }
 
+# Files (glob patterns) each stage owns under its stage_dir. Used by
+# clear_stage_outputs on backtrack — phase-level stages share the same
+# stage_dir, so we cannot rmtree the directory. Instead we unlink only the
+# files this stage produced. Patterns are glob-relative to stage_dir.
+STAGE_OWNED_PATTERNS = {
+    "planning":      ["planning.md"],
+    "requirements":  ["requirements.md"],
+    "phase-split":   ["phases.md"],
+    "design":        ["design.md"],
+    "branch-create": ["branch.txt"],
+    "implement":     ["implementation.md"],
+    "lint-test": [
+        "lint-test.md",
+        "headless-round-*.log",
+        "gates/install.json", "gates/install.stdout.txt", "gates/install.stderr.txt",
+        "gates/lint.json",    "gates/lint.stdout.txt",    "gates/lint.stderr.txt",
+        "gates/format.json",  "gates/format.stdout.txt",  "gates/format.stderr.txt",
+        "gates/types.json",   "gates/types.stdout.txt",   "gates/types.stderr.txt",
+        "gates/tests.json",   "gates/tests.stdout.txt",   "gates/tests.stderr.txt",
+        "gates/coverage.json","gates/coverage.stdout.txt","gates/coverage.stderr.txt",
+    ],
+    "code-review":   ["review.md", "verdict.yaml"],
+    "sanity-test": [
+        "sanity.md",
+        "gates/sanity.json", "gates/sanity.stdout.txt", "gates/sanity.stderr.txt",
+    ],
+    "document":      ["docs-changes.md"],
+    "pr-create":     ["pr.md", "pr-url.txt"],
+    "delivery":      ["delivery.md"],
+}
+
 STAGE_MARKER = {k: f"{k.replace('-', '_').upper()}_DONE" for k in STAGE_DIRS}
 
 RUN_LEVEL_STAGES = {"planning", "requirements", "phase-split", "delivery"}
@@ -520,17 +551,23 @@ def validate_verdict(verdict_path: Path) -> tuple[bool, str, dict]:
 # ---------------------------------------------------------------------------
 
 def clear_stage_outputs(run_dir: Path, stages: list[str], phase: int | None) -> None:
-    """Remove both LLM artifacts and orchestrator artifacts for the given stages."""
+    """Remove only the files each stage owns under its stage_dir.
+
+    Phase-level stages share `phase-{N}/` as their stage_dir, so we cannot
+    rmtree the directory — that would also delete sibling stages' outputs we
+    want to preserve, and the shared `feedback.md`. Instead we glob each
+    pattern in STAGE_OWNED_PATTERNS relative to stage_dir and unlink matches.
+    """
     for stage in stages:
         sd = stage_dir(run_dir, stage, phase)
-        if sd.exists() and sd != run_dir:
-            shutil.rmtree(sd, ignore_errors=True)
-        else:
-            # run-level: only remove this stage's primary output and feedback dir
-            primary = stage_primary_output(run_dir, stage, phase)
-            primary.unlink(missing_ok=True)
-            (run_dir / stage).mkdir(parents=True, exist_ok=True)
-            shutil.rmtree(run_dir / stage, ignore_errors=True)
+        if not sd.exists():
+            continue
+        for pattern in STAGE_OWNED_PATTERNS.get(stage, []):
+            for match in sd.glob(pattern):
+                if match.is_dir():
+                    shutil.rmtree(match, ignore_errors=True)
+                else:
+                    match.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -803,7 +840,7 @@ def run_lint_test_loop(run_dir: Path, phase: int | None, state: dict, eff: dict)
                 )
             state["stage_outputs"][stage_key(stage, phase)] = str(primary)
             save_state(run_dir, state)
-            emit_result("pass", stage=stage, phase=phase, output=str(primary))
+            emit_result("pass", stage=stage, phase=phase, next="code-review", output=str(primary))
             return 0
 
         round_n = state["counters"][counter_key] + 1
@@ -964,8 +1001,17 @@ def route(stage: str, run_dir: Path, phase: int | None, state: dict, eff: dict) 
             state["counters"][ck] += 1
             if state["counters"][ck] > caps.get("sanity_loop", 2):
                 return _escalate(run_dir, state, "sanity_cap", stage, phase)
-            _backtrack_to(run_dir, state, "design", phase, source="sanity-fail",
-                          body=f"sanity test failed: {gate_path}")
+            if gd.get("skipped"):
+                fb = (
+                    f"sanity gate skipped — {gd.get('skip_reason')}. "
+                    f"Add executable sanity tests under tests/sanity/."
+                )
+            else:
+                fb = (
+                    f"sanity test failed (exit_code={gd.get('exit_code')}). "
+                    f"see {gate_path} and stdout/stderr siblings."
+                )
+            _backtrack_to(run_dir, state, "design", phase, source="sanity-fail", body=fb)
             save_state(run_dir, state)
             emit_result("loopback", to="design", phase=phase, count=state["counters"][ck])
             return 0
@@ -980,8 +1026,14 @@ def route(stage: str, run_dir: Path, phase: int | None, state: dict, eff: dict) 
 
     # Run termination: delivery success means the whole run is done.
     if stage == "delivery":
-        final_status = "escalated_recovered" if state.get("escalation_triggers") else "done"
-        state["status"] = "done"
+        if state.get("status") == "aborted":
+            final_status = "aborted"
+        elif state.get("escalation_triggers"):
+            final_status = "escalated_recovered"
+            state["status"] = "done"
+        else:
+            final_status = "done"
+            state["status"] = "done"
         _append_run_index(state, final_status)
         save_state(run_dir, state)
         emit_result("pass", stage=stage, phase=phase, next=None, final_status=final_status)
@@ -1006,7 +1058,7 @@ def _intervention_schema_for(stage: str) -> dict:
     if stage == "design":
         return {"decision": "approve|revise", "feedback": "string"}
     if stage == "pr-create":
-        return {"decision": "approve|revise|set_mode", "mode": "auto|manual", "feedback": "string"}
+        return {"decision": "approve|revise", "feedback": "string"}
     return {}
 
 

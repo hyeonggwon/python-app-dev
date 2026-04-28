@@ -43,7 +43,7 @@
 | `interventions.requirements` | 요구사항 직후 | `on` |
 | `interventions.phase_split` | Phase 분리 직후 | `on` |
 | `interventions.design_per_phase` | 각 phase의 design 직후 | `off` |
-| `interventions.pr_per_phase` | 각 phase의 pr-create 직전 | `on` |
+| `interventions.pr_per_phase` | 각 phase의 pr-create 직후 | `on` |
 
 사용자가 빠르게 진행하고 싶으면 모두 끄고, 신중히 가고 싶으면 모두 켤 수 있다.
 

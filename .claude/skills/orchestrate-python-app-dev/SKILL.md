@@ -107,7 +107,7 @@ Phase-level (각 phase 마다 순서대로, `--phase N` 필수):
 | `requirements` | `requirements` 후 | `decision`, `feedback`, `add_requirements`, `remove_ids` |
 | `phase_split` | `phase-split` 후 | `decision`, `feedback`, `merge_phases`, `split_phase`, `reorder` |
 | `design_per_phase` | 각 phase `design` 후 | `decision: approve|revise`, `feedback` |
-| `pr_per_phase` | 각 phase `pr-create` 후 | `decision: approve|revise|set_mode`, `mode: auto|manual`, `feedback` |
+| `pr_per_phase` | 각 phase `pr-create` 후 | `decision: approve|revise`, `feedback` |
 
 기본값: planning/requirements/phase_split/pr_per_phase 는 ON, design_per_phase 는 OFF.
 
@@ -154,5 +154,5 @@ ESCALATED: <trigger>
 각 stage 호출 후 다음을 확인 (실패 시 즉시 정지하고 사용자에게 보고):
 
 - stdout 에 `ORCHESTRATE_RESULT: { ... }` 가 한 줄 있다
-- `decision` 필드가 5개 enum 중 하나다 (`pass | loopback | awaiting_user | escalated | aborted`)
+- `decision` 필드가 4개 enum 중 하나다 (`pass | loopback | awaiting_user | escalated`). abort 는 사용자가 선택하는 escalation decision 이지 orchestrator 가 emit 하는 값이 아니다 — abort 처리 후 호출된 `delivery` 는 `decision: pass, final_status: aborted` 로 응답한다.
 - 그 외에는 `state.json` 도 `escalation.md` 도 직접 편집하지 않는다 (orchestrator 만 쓴다)

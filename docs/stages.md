@@ -162,7 +162,7 @@ STAGE_DIRS = {
 | **aux output 매핑** | `STAGE_REQUIRED_AUX_OUTPUTS["code-review"] = ["review.md", "verdict.yaml"]` |
 | **참조** | `voltagent-qa-sec:code-reviewer`, `voltagent-qa-sec:security-auditor` (옵션) |
 | **검증 (orchestrator)** | (a) `verdict.yaml` 존재 (b) shape-check: `verdict ∈ {pass, minor, major, critical}`, `loop_target ∈ {none, implement, design, escalation}`, `issues_*`는 list (c) 라벨↔loop_target 정합성: `pass→none`, `minor→implement`, `major→design`, `critical→escalation` (위반 시 escalation) (d) marker (e) 모든 게이트 passed인데 verdict ≠ pass면 진행, 게이트 fail인데 verdict=pass면 escalation (객관 우선) |
-| **루프백 + cap** | `minor` → implement (cap=3). `major` → design (cap=2). `critical` → escalation 즉시. cap 별 비교는 `state.counters.code_review_minor_count` / `code_review_major_count` |
+| **루프백 + cap** | `minor` → implement (cap=3). `major` → design (cap=2). `critical` → escalation 즉시. cap 별 비교는 `state.counters.code_review_minor__phase_{N}` / `code_review_major__phase_{N}` |
 | **사용자 개입** | (없음) |
 | **도구** | `Read, Write, Task, Glob, Grep` (Read-only on 검사 대상; Write는 자기 산출물용) |
 
@@ -187,7 +187,7 @@ STAGE_DIRS = {
 | **Outputs** | `phase-{N}/docs-changes.md` + 프로젝트 내 문서 변경 (README, docstring, `docs/`, ADR 등) |
 | **프롬프트 스케치** | 변경된 코드·새로 추가된 인터페이스에 따라 (1) README 업데이트 (2) 공개 API docstring (3) 필요시 ADR 추가. 모든 변경 파일은 commit. 마지막 줄 `DOCUMENT_DONE: ...` |
 | **참조** | (없음) |
-| **검증** | (a) `docs-changes.md` 존재 (b) 변경된 파일 ≥ 1 (없으면 "no doc change" 명시 — orchestrator가 그 문구 검사) (c) marker |
+| **검증** | (a) `docs-changes.md` 존재 (b) marker. 문서 변경이 없는 phase 라면 `docs-changes.md` 본문에 그 사유를 기록한다 (orchestrator 는 본문 형식을 강제하지 않음 — 사람이 PR 리뷰 시 검토) |
 | **루프백 + cap** | 실패 시 자기 재실행 (cap=2) |
 | **사용자 개입** | (없음) |
 | **도구** | `Read, Write, Edit, Glob, Grep, Bash(git add:*, git commit:*, git status, git diff:*)` |
@@ -202,7 +202,7 @@ STAGE_DIRS = {
 | **참조** | (없음) |
 | **검증** | (a) `pr.md` 존재 + 본문 형식 (b) `pr_mode == auto`면 `pr-url.txt` 존재 + 유효한 GitHub PR URL 정규식 (c) marker |
 | **루프백 + cap** | 사용자 개입 ⑤ 시 자기 루프백 (cap=2). gh push 실패 시 자기 재시도 (cap=2) |
-| **사용자 개입** | ⑤ `interventions.pr_per_phase == on`이면 **직전**. 기대 입력: `approve` / `revise(피드백)` / `set_mode(auto/manual)` |
+| **사용자 개입** | ⑤ `interventions.pr_per_phase == on`이면 **직후** (post-stage 승인). 기대 입력: `approve` / `revise(피드백)` |
 | **도구** | `Read, Write, Bash(git push:*, git rev-parse:*, gh pr:*, gh repo:*)` |
 
 ---
@@ -234,7 +234,7 @@ STAGE_DIRS = {
 | ② requirements | 위와 동일 + `add_requirements: [{title, priority, ...}]`, `remove_ids: [...]` |
 | ③ phase-split | 위 + `merge_phases: [[1,2]]`, `split_phase: 1`, `reorder: [2,1,3]` |
 | ④ design (옵션) | `decision: approve\|revise`, `feedback: \|<텍스트>` |
-| ⑤ pr-create | `decision: approve\|revise\|set_mode`, `mode: auto\|manual`, `feedback: \|<텍스트>` |
+| ⑤ pr-create | `decision: approve\|revise`, `feedback: \|<텍스트>` |
 
 메인 세션은 사용자 답변을 `{run_dir}/<stage_dir>/<stage>/decision.md`에 기록하고 `orchestrate.py <stage> --resume` 호출.
 
