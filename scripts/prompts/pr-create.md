@@ -38,7 +38,7 @@ Use the same format as the first commit's subject:
 ## Phase 산출물
 - 설계: phase-{N}/design.md
 - 구현 요약: phase-{N}/implementation.md
-- 코드리뷰 verdict: phase-{N}/verdict.yaml
+- 코드리뷰 verdict: phase-{N}/verdict.json
 - Sanity: phase-{N}/sanity.md
 - 문서 변경: phase-{N}/docs-changes.md
 

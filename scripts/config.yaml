@@ -4,7 +4,9 @@
 # {run_dir}/effective_thresholds.json (read by LLM review stages).
 
 caps:
-  # In-stage self correction
+  # In-stage self correction (lint-test runs the install gate as one of six;
+  # there is no separate install_loop because the install gate failure feeds
+  # the same self-correction loop as the others).
   lint_test_self_correct: 5
 
   # Code review verdict loops (per phase)
@@ -14,21 +16,15 @@ caps:
   # Sanity test failure → design loopback (per phase)
   sanity_loop: 2
 
-  # Install gate failure → implement loopback (per phase)
-  install_loop: 3
-
-  # Self loops on user-intervention rejection
+  # User-intervention revise loops. design_self also covers architect-reviewer
+  # self-loops on the same phase's design — they share the cap.
   planning_revise: 2
   requirements_revise: 2
   phase_split_revise: 2
   design_self: 2
   pr_create_revise: 2
 
-  # Generic stage retry caps
-  branch_create_retry: 2
-  document_retry: 2
-
-  # Runaway cap (global, escalates only when paired with non-pass last verdict)
+  # Runaway cap (global). Increments on every stage entry; escalates when crossed.
   total_stages: 200
 
 thresholds:

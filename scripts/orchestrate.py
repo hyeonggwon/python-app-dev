@@ -110,7 +110,7 @@ STAGE_TOOLS = {
 
 # Stages that produce more than one required aux file beyond their primary output
 STAGE_REQUIRED_AUX_OUTPUTS = {
-    "code-review": ["review.md", "verdict.yaml"],
+    "code-review": ["review.md", "verdict.json"],
     # other stages have a single primary output: enforced by stage-specific checks
 }
 
@@ -150,7 +150,7 @@ STAGE_OWNED_PATTERNS = {
         "gates/tests.json",   "gates/tests.stdout.txt",   "gates/tests.stderr.txt",
         "gates/coverage.json","gates/coverage.stdout.txt","gates/coverage.stderr.txt",
     ],
-    "code-review":   ["review.md", "verdict.yaml"],
+    "code-review":   ["review.md", "verdict.json"],
     "sanity-test": [
         "sanity.md",
         "gates/sanity.json", "gates/sanity.stdout.txt", "gates/sanity.stderr.txt",
@@ -255,13 +255,54 @@ def save_state(run_dir: Path, state: dict) -> None:
 def ensure_phase_counters(state: dict, phase: int) -> None:
     keys = [
         "lint_test_self_correct", "code_review_minor", "code_review_major",
-        "sanity", "install", "design_self", "branch_create",
-        "document", "pr_create",
+        "sanity", "design_self", "pr_create_revise",
     ]
     for k in keys:
         ck = f"{k}__phase_{phase}"
         if ck not in state["counters"]:
             state["counters"][ck] = 0
+
+
+# In-stage retry counters reset on backtrack (one fresh attempt per re-entry).
+# Verdict-type counters (code_review_minor/major) are intentionally cumulative.
+IN_STAGE_RETRY_COUNTERS = {
+    "design":      "design_self",
+    "lint-test":   "lint_test_self_correct",
+    "sanity-test": "sanity",
+}
+
+
+def _revise_counter_keys(stage: str, phase: int | None) -> tuple[str, str] | None:
+    """Return (counter_key, cap_key) for a user-revise on this stage, or None.
+
+    For phase-level stages with a per-phase counter, returns the resolved key
+    (e.g. ``design_self__phase_2``). For run-level stages, returns the bare key.
+    """
+    if stage == "planning":
+        return ("planning_revise", "planning_revise")
+    if stage == "requirements":
+        return ("requirements_revise", "requirements_revise")
+    if stage == "phase-split":
+        return ("phase_split_revise", "phase_split_revise")
+    if stage == "design" and phase is not None:
+        return (f"design_self__phase_{phase}", "design_self")
+    if stage == "pr-create" and phase is not None:
+        return (f"pr_create_revise__phase_{phase}", "pr_create_revise")
+    return None
+
+
+def _render_user_feedback(user_input: dict) -> str:
+    parts: list[str] = []
+    if user_input.get("feedback"):
+        parts.append("## 사용자 피드백")
+        parts.append(str(user_input["feedback"]).strip())
+    extras = {k: v for k, v in user_input.items() if k not in ("decision", "feedback")}
+    if extras:
+        parts.append("## 사용자 입력 (구조화)")
+        parts.append("```json")
+        parts.append(json.dumps(extras, indent=2, ensure_ascii=False))
+        parts.append("```")
+    return "\n\n".join(parts) if parts else "(사용자가 revise 만 표시; 자유 본문 없음)"
 
 
 # ---------------------------------------------------------------------------
@@ -518,17 +559,15 @@ def check_marker(stdout: str, marker: str) -> bool:
 # Verdict shape-check
 # ---------------------------------------------------------------------------
 
-def parse_simple_yaml_file(path: Path) -> dict:
-    return _parse_simple_yaml(path.read_text(encoding="utf-8"))
-
-
 def validate_verdict(verdict_path: Path) -> tuple[bool, str, dict]:
     if not verdict_path.exists():
         return False, f"verdict file missing: {verdict_path}", {}
     try:
-        data = parse_simple_yaml_file(verdict_path)
+        data = json.loads(verdict_path.read_text(encoding="utf-8"))
     except Exception as e:
         return False, f"verdict parse error: {e}", {}
+    if not isinstance(data, dict):
+        return False, f"verdict file is not a JSON object: top-level is {type(data).__name__}", {}
 
     label = (data.get("verdict") or "").strip().lower()
     loop_target = (data.get("loop_target") or "").strip().lower()
@@ -668,15 +707,33 @@ def run_stage(stage: str, run_dir: Path, phase: int | None, resume: bool) -> int
     state = load_state(run_dir)
     eff = merge_effective_thresholds(state)
     write_effective_thresholds(run_dir, eff)
+    caps = eff.get("caps", {})
 
     if phase is not None:
         ensure_phase_counters(state, phase)
+
+    # Handle --resume: consume user_input from a prior awaiting_user gate.
+    # approve → emit pass + route to next; revise → write feedback, increment
+    # revise counter, fall through to re-run the stage; reject → escalate.
+    if resume:
+        rc = _handle_resume(stage, run_dir, phase, state, caps)
+        if rc is not None:
+            return rc
+        # rc is None → revise path: state has been updated, fall through to re-run
 
     state["current_stage"] = stage
     state["current_phase"] = phase
     state["status"] = "running"
     state["counters"]["total_stages"] += 1
     save_state(run_dir, state)
+
+    # Runaway cap: any stage transition counts; escalate if exceeded.
+    total_cap = int(caps.get("total_stages", 200))
+    if state["counters"]["total_stages"] > total_cap:
+        return _escalate(
+            run_dir, state, "total_stages_cap", stage, phase,
+            extra={"total_stages": state["counters"]["total_stages"], "cap": total_cap},
+        )
 
     # lint-test owns its own self-correction loop (gate-run → LLM round → re-run → cap).
     if stage == "lint-test":
@@ -742,12 +799,31 @@ def stage_key(stage: str, phase: int | None) -> str:
 LINT_TEST_GATES = ["install", "lint", "format", "types", "tests", "coverage"]
 
 
+def ensure_toolchain_json(run_dir: Path, state: dict) -> Path:
+    """Materialize {run_dir}/interview/toolchain.json from interview_spec.
+
+    Deep-interview merges detect_toolchain results into
+    state.interview_spec.detected_toolchain. run_gate.py reads a JSON file path
+    via --toolchain. This helper bridges the two: it always (re)writes the
+    file from current state so subsequent gate runs see the latest values.
+
+    For mode=new (no detect step), interview_spec.detected_toolchain is
+    typically null; we write an empty object so run_gate falls back to its
+    built-in defaults (uv / ruff / mypy / pytest).
+    """
+    path = run_dir / "interview" / "toolchain.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    detected = state.get("interview_spec", {}).get("detected_toolchain") or {}
+    path.write_text(json.dumps(detected, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return path
+
+
 def run_lint_test_gates(run_dir: Path, phase: int | None, state: dict, eff: dict) -> list[dict]:
     workspace = resolve_workspace(state)
     if workspace is None or not workspace.exists():
         # No workspace yet — return empty; caller treats this as gates-incomplete (escalates).
         return []
-    toolchain_path = run_dir / "interview" / "toolchain.json"
+    toolchain_path = ensure_toolchain_json(run_dir, state)
     threshold = eff.get("coverage_threshold", 70)
     results: list[dict] = []
     for gate in LINT_TEST_GATES:
@@ -758,9 +834,8 @@ def run_lint_test_gates(run_dir: Path, phase: int | None, state: dict, eff: dict
             "--run-dir", str(run_dir),
             "--phase", str(phase),
             "--workspace", str(workspace),
+            "--toolchain", str(toolchain_path),
         ]
-        if toolchain_path.exists():
-            cmd += ["--toolchain", str(toolchain_path)]
         if gate == "coverage":
             cmd += ["--threshold", str(threshold)]
         subprocess.run(cmd, capture_output=True, text=True)
@@ -782,7 +857,7 @@ def run_sanity_gate(run_dir: Path, phase: int | None, state: dict) -> dict | Non
     workspace = resolve_workspace(state)
     if workspace is None or not workspace.exists():
         return None
-    toolchain_path = run_dir / "interview" / "toolchain.json"
+    toolchain_path = ensure_toolchain_json(run_dir, state)
     cmd = [
         sys.executable,
         str(harness_root() / "scripts" / "run_gate.py"),
@@ -790,9 +865,8 @@ def run_sanity_gate(run_dir: Path, phase: int | None, state: dict) -> dict | Non
         "--run-dir", str(run_dir),
         "--phase", str(phase),
         "--workspace", str(workspace),
+        "--toolchain", str(toolchain_path),
     ]
-    if toolchain_path.exists():
-        cmd += ["--toolchain", str(toolchain_path)]
     subprocess.run(cmd, capture_output=True, text=True)
     gate_path = run_dir / f"phase-{phase}" / "gates" / "sanity.json"
     if gate_path.exists():
@@ -911,7 +985,7 @@ def route(stage: str, run_dir: Path, phase: int | None, state: dict, eff: dict) 
 
     # code-review: read verdict and route
     if stage == "code-review":
-        verdict_path = stage_dir(run_dir, stage, phase) / "verdict.yaml"
+        verdict_path = stage_dir(run_dir, stage, phase) / "verdict.json"
         ok, msg, data = validate_verdict(verdict_path)
         if not ok:
             write_escalation(run_dir, "verdict_invalid", {
@@ -1046,6 +1120,70 @@ def route(stage: str, run_dir: Path, phase: int | None, state: dict, eff: dict) 
     return 0
 
 
+def _handle_resume(stage: str, run_dir: Path, phase: int | None, state: dict, caps: dict) -> int | None:
+    """Consume state.user_input after a prior awaiting_user gate.
+
+    Returns:
+      - 0  on approve (emits pass + route to next stage)
+      - 3  on reject / unknown decision / cap exceeded (escalates)
+      - None on revise (caller must fall through and re-run the stage)
+    """
+    user_input = state.get("user_input") or {}
+    decision = (user_input.get("decision") or "").strip().lower()
+
+    # Always consume the stale awaiting_user state — even if input is empty.
+    state["awaiting_input_schema"] = None
+    state["user_input"] = {}
+
+    if not decision or decision == "approve":
+        # Run-level stages share run_dir as their stage_dir. If the user
+        # revised once and then approved, feedback.md from the revise round
+        # would still be visible to the *next* run-level stage. Clear it.
+        # Phase-level stages legitimately share feedback within the phase dir
+        # across stages and loops, so leave those alone.
+        if stage in RUN_LEVEL_STAGES:
+            (stage_dir(run_dir, stage, phase) / "feedback.md").unlink(missing_ok=True)
+        state["status"] = "running"
+        save_state(run_dir, state)
+        emit_result("pass", stage=stage, phase=phase, next=_default_next_stage(stage, phase))
+        return 0
+
+    if decision == "reject":
+        return _escalate(
+            run_dir, state, "user_rejected", stage, phase,
+            extra={"feedback": user_input.get("feedback")},
+        )
+
+    if decision == "revise":
+        keys = _revise_counter_keys(stage, phase)
+        if keys is not None:
+            counter_key, cap_key = keys
+            state["counters"].setdefault(counter_key, 0)
+            state["counters"][counter_key] += 1
+            cap = int(caps.get(cap_key, 2))
+            if state["counters"][counter_key] > cap:
+                return _escalate(
+                    run_dir, state, f"{cap_key}_cap", stage, phase,
+                    extra={"count": state["counters"][counter_key], "cap": cap},
+                )
+        sd = stage_dir(run_dir, stage, phase)
+        write_feedback(sd, f"{stage}-user-revise", _render_user_feedback(user_input))
+        # Clear stale outputs so the LLM regenerates them this round
+        primary = stage_primary_output(run_dir, stage, phase)
+        if primary.exists():
+            primary.unlink()
+        for aux in STAGE_REQUIRED_AUX_OUTPUTS.get(stage, []):
+            (sd / aux).unlink(missing_ok=True)
+        state["status"] = "running"
+        save_state(run_dir, state)
+        return None  # fall through to re-run
+
+    return _escalate(
+        run_dir, state, "unknown_user_decision", stage, phase,
+        extra={"decision": decision, "valid": ["approve", "revise", "reject"]},
+    )
+
+
 def _intervention_schema_for(stage: str) -> dict:
     if stage == "planning":
         return {"decision": "approve|reject|revise", "feedback": "string"}
@@ -1098,12 +1236,31 @@ def _read_front_matter_field(path: Path, field: str) -> str | None:
 
 
 def _render_issues(verdict: dict, key: str) -> str:
+    """Render an `issues_*` array from verdict.json as readable Markdown.
+
+    Each issue is expected to be a dict with location/description/suggestion
+    (the schema the code-review prompt teaches), but plain-string issues are
+    handled too for forward compatibility.
+    """
     issues = verdict.get(key, []) or []
     if not issues:
-        return f"{key}: (none)"
+        return f"# {key}\n\n(none)"
     lines = [f"# {key}"]
     for i, iss in enumerate(issues, 1):
-        lines.append(f"\n## {i}. {iss}")
+        if isinstance(iss, dict):
+            location = iss.get("location") or "(location unspecified)"
+            description = (iss.get("description") or "").strip()
+            suggestion = (iss.get("suggestion") or "").strip()
+            lines.append(f"\n## {i}. `{location}`")
+            if description:
+                lines.append(f"\n**문제**: {description}")
+            if suggestion:
+                lines.append(f"\n**제안**: {suggestion}")
+        else:
+            lines.append(f"\n## {i}. {iss}")
+    summary = (verdict.get("summary") or "").strip()
+    if summary:
+        lines.append(f"\n---\n\n## 종합 요약\n\n{summary}")
     return "\n".join(lines)
 
 
@@ -1131,6 +1288,18 @@ def _backtrack_to(run_dir: Path, state: dict, target_stage: str, phase: int | No
     # 5. Reset stage_outputs entries for cleared stages
     for s in to_clear:
         state["stage_outputs"].pop(stage_key(s, phase), None)
+
+    # 6. Reset in-stage retry counters for the target stage and all cleared
+    #    stages. These count "in-stage attempts" — re-entering means a fresh
+    #    attempt count, otherwise a phase that already self-corrected once
+    #    would immediately escalate on the next pass through the same stage.
+    #    Verdict-type counters (code_review_minor/major) and user-revise
+    #    counters intentionally stay cumulative within the phase.
+    if phase is not None:
+        for s in [target_stage, *to_clear]:
+            counter_base = IN_STAGE_RETRY_COUNTERS.get(s)
+            if counter_base:
+                state["counters"][f"{counter_base}__phase_{phase}"] = 0
 
 
 def _escalate(run_dir: Path, state: dict, trigger: str, stage: str, phase: int | None, extra: dict | None = None) -> int:

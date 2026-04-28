@@ -80,7 +80,7 @@ outputs/<run-id>/
 ├── phase-N/
 │   ├── design.md, branch-create.md, implement.md, sanity-test.md, document.md, pr-create.md
 │   ├── lint-test/             # ruff / mypy / pytest result JSONs
-│   ├── review.md, verdict.yaml
+│   ├── review.md, verdict.json
 │   └── feedback.md            # accumulated on loopback
 ├── workspace/                 # user project's .git (kept separate)
 ├── escalation.md / escalation.decision.md  # when triggered

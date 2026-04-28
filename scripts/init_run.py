@@ -46,22 +46,22 @@ def initial_state(run_id: str) -> dict:
         "user_input": {},
         "stage_outputs": {},  # {"planning": "outputs/<run>/planning.md", ...}
         "counters": {
-            # Run-level revise loops
+            # Run-level revise loops (incremented by orchestrator's resume path
+            # when the user picks `decision: revise` on a planning/requirements/
+            # phase-split intervention).
             "planning_revise": 0,
             "requirements_revise": 0,
             "phase_split_revise": 0,
             # Global runaway cap
             "total_stages": 0,
-            # Per-phase counters get added lazily as phases enter:
-            #   "lint_test_self_correct__phase_1": 0,
-            #   "code_review_minor__phase_1": 0,
-            #   "code_review_major__phase_1": 0,
-            #   "sanity__phase_1": 0,
-            #   "install__phase_1": 0,
-            #   "design_self__phase_1": 0,
-            #   "branch_create__phase_1": 0,
-            #   "document__phase_1": 0,
-            #   "pr_create__phase_1": 0,
+            # Per-phase counters added lazily by ensure_phase_counters when a
+            # phase first enters a phase-level stage. Keys:
+            #   "lint_test_self_correct__phase_N": gate self-correction rounds
+            #   "code_review_minor__phase_N":      cumulative minor verdicts
+            #   "code_review_major__phase_N":      cumulative major verdicts
+            #   "sanity__phase_N":                 sanity-test re-runs
+            #   "design_self__phase_N":            architect-reviewer + user revise
+            #   "pr_create_revise__phase_N":       pr-create user revise
         },
         "overrides": {
             # Per-run cap overrides loaded from interview/spec.md `caps:` go here.

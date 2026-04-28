@@ -157,11 +157,11 @@ STAGE_DIRS = {
 | 항목 | 값 |
 |---|---|
 | **Inputs** | tacit-knowledge, design, implementation, `phase-{N}/gates/*.json` |
-| **Outputs** | `phase-{N}/review.md` + `phase-{N}/verdict.yaml` (필수 aux) |
-| **프롬프트 스케치** | `voltagent-qa-sec:code-reviewer`를 Task로 호출. spec의 `security_review == true`면 `security-auditor`도 호출. 두 verdict를 종합해 `verdict.yaml` 작성: `{verdict, loop_target, issues_critical, issues_major, issues_minor, summary}`. 게이트 JSON을 입력으로 받지만 **테스트를 직접 돌리지 않는다**. 마지막 줄 `CODE_REVIEW_DONE: ...` |
-| **aux output 매핑** | `STAGE_REQUIRED_AUX_OUTPUTS["code-review"] = ["review.md", "verdict.yaml"]` |
+| **Outputs** | `phase-{N}/review.md` + `phase-{N}/verdict.json` (필수 aux) |
+| **프롬프트 스케치** | `voltagent-qa-sec:code-reviewer`를 Task로 호출. spec의 `security_review == true`면 `security-auditor`도 호출. 두 verdict를 종합해 `verdict.json` 작성: `{verdict, loop_target, issues_critical, issues_major, issues_minor, summary}`. 게이트 JSON을 입력으로 받지만 **테스트를 직접 돌리지 않는다**. 마지막 줄 `CODE_REVIEW_DONE: ...` |
+| **aux output 매핑** | `STAGE_REQUIRED_AUX_OUTPUTS["code-review"] = ["review.md", "verdict.json"]` |
 | **참조** | `voltagent-qa-sec:code-reviewer`, `voltagent-qa-sec:security-auditor` (옵션) |
-| **검증 (orchestrator)** | (a) `verdict.yaml` 존재 (b) shape-check: `verdict ∈ {pass, minor, major, critical}`, `loop_target ∈ {none, implement, design, escalation}`, `issues_*`는 list (c) 라벨↔loop_target 정합성: `pass→none`, `minor→implement`, `major→design`, `critical→escalation` (위반 시 escalation) (d) marker (e) 모든 게이트 passed인데 verdict ≠ pass면 진행, 게이트 fail인데 verdict=pass면 escalation (객관 우선) |
+| **검증 (orchestrator)** | (a) `verdict.json` 존재 (b) shape-check: `verdict ∈ {pass, minor, major, critical}`, `loop_target ∈ {none, implement, design, escalation}`, `issues_*`는 list (c) 라벨↔loop_target 정합성: `pass→none`, `minor→implement`, `major→design`, `critical→escalation` (위반 시 escalation) (d) marker (e) 모든 게이트 passed인데 verdict ≠ pass면 진행, 게이트 fail인데 verdict=pass면 escalation (객관 우선) |
 | **루프백 + cap** | `minor` → implement (cap=3). `major` → design (cap=2). `critical` → escalation 즉시. cap 별 비교는 `state.counters.code_review_minor__phase_{N}` / `code_review_major__phase_{N}` |
 | **사용자 개입** | (없음) |
 | **도구** | `Read, Write, Task, Glob, Grep` (Read-only on 검사 대상; Write는 자기 산출물용) |
@@ -281,4 +281,4 @@ VERDICT_TO_LOOP = {
 
 `total_stages`는 runaway cap (전역). 도달 + 마지막 verdict=pass면 정상 종료, 도달 + 비-pass면 escalation.
 
-Backtrack(예: `code-review.major → design`) 시 해당 phase의 후속 stage에 누적된 verdict_history와 stage 산출물 + orchestrator 산출물(`phase-{N}/gates/`, `verdict.yaml`)을 함께 비운다 (`clear_stage_outputs`).
+Backtrack(예: `code-review.major → design`) 시 해당 phase의 후속 stage에 누적된 verdict_history와 stage 산출물 + orchestrator 산출물(`phase-{N}/gates/`, `verdict.json`)을 함께 비운다 (`clear_stage_outputs`).

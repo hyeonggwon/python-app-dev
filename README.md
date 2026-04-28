@@ -80,7 +80,7 @@ outputs/<run-id>/
 ├── phase-N/
 │   ├── design.md, branch-create.md, implement.md, sanity-test.md, document.md, pr-create.md
 │   ├── lint-test/             # ruff / mypy / pytest 결과 JSON
-│   ├── review.md, verdict.yaml
+│   ├── review.md, verdict.json
 │   └── feedback.md            # 루프백 시 누적
 ├── workspace/                 # 사용자 프로젝트의 .git (분리됨)
 ├── escalation.md / escalation.decision.md  # 발생 시

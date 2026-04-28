@@ -57,20 +57,30 @@ Produce a unified code-review verdict by invoking sub-agent reviewers and synthe
 </details>
 ```
 
-#### `{stage_dir}/verdict.yaml` — machine-readable verdict (orchestrator parses this)
+#### `{stage_dir}/verdict.json` — machine-readable verdict (orchestrator parses this)
 
-```yaml
-verdict: pass            # pass | minor | major | critical
-loop_target: none        # none | implement | design | escalation
-issues_critical:
-  - location: src/...
-    description: ...
-    suggestion: ...
-issues_major: []
-issues_minor: []
-summary: |
-  한 단락. 종합 판단의 근거.
+JSON, not YAML — the orchestrator uses stdlib `json.loads` to parse it. Every
+issue must be an object with `location` / `description` / `suggestion`.
+
+```json
+{
+  "verdict": "pass",
+  "loop_target": "none",
+  "issues_critical": [
+    {
+      "location": "src/auth/login.py:42",
+      "description": "토큰 만료 검증이 누락됨",
+      "suggestion": "exp claim 을 검증하거나 PyJWT 의 exp 자동 검증 옵션 사용"
+    }
+  ],
+  "issues_major": [],
+  "issues_minor": [],
+  "summary": "한 단락. 종합 판단의 근거."
+}
 ```
+
+`verdict` ∈ `{pass, minor, major, critical}`,
+`loop_target` ∈ `{none, implement, design, escalation}`.
 
 ### Verdict classification (must follow exactly)
 
@@ -92,5 +102,5 @@ summary: |
 ## Output
 
 ```
-CODE_REVIEW_DONE: {stage_dir}/verdict.yaml
+CODE_REVIEW_DONE: {stage_dir}/verdict.json
 ```
