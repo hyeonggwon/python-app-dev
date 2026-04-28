@@ -8,8 +8,7 @@
 4. `{requirements_path}` — acceptance criteria for those ids.
 5. `{stage_dir}/design.md`
 6. `{stage_dir}/branch.txt`
-7. `{stage_dir}/feedback.md` (if exists) — feedback from `lint-test` self-correct or `code-review` minor loop.
-8. `{stage_dir}/review.md` (if a code-review minor loop just sent us back) — concrete issues to address.
+7. `{stage_dir}/feedback.md` (if exists) — feedback from `lint-test` self-correct or `code-review` minor loop. The minor-loop feedback body already contains the rendered issues; `review.md` itself is cleared on backtrack.
 
 Workspace cwd: `{workspace}`.
 

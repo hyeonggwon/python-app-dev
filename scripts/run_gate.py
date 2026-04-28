@@ -43,11 +43,17 @@ def load_toolchain(path: Path | None) -> dict:
     return {}
 
 
-def make_command(gate: str, toolchain: dict, workspace: Path) -> list[str] | None:
+def make_command(gate: str, toolchain: dict, workspace: Path, options: dict | None = None) -> list[str] | None:
     """Return the shell command (as argv) for a gate, or None to skip.
 
     Honors detected toolchain when available; falls back to harness standard.
+    `options` carries per-run toggles materialized from effective_thresholds
+    (e.g. ``mypy_strict``, ``pytest_parallel``). Unknown keys are ignored.
     """
+    options = options or {}
+    mypy_strict = bool(options.get("mypy_strict", False))
+    pytest_parallel = bool(options.get("pytest_parallel", False))
+
     packaging = toolchain.get("packaging", "uv")
     linter = toolchain.get("linter", "ruff") or "ruff"
     formatter = toolchain.get("formatter", "ruff-format") or "ruff-format"
@@ -56,6 +62,7 @@ def make_command(gate: str, toolchain: dict, workspace: Path) -> list[str] | Non
 
     use_uv_run = packaging == "uv"
     prefix = ["uv", "run"] if use_uv_run else []
+    parallel_args = ["-n", "auto"] if pytest_parallel else []
 
     if gate == "install":
         if packaging == "uv":
@@ -90,9 +97,16 @@ def make_command(gate: str, toolchain: dict, workspace: Path) -> list[str] | Non
     if gate == "types":
         if typechecker == "mypy":
             target = "src/" if (workspace / "src").exists() else "."
-            return [*prefix, "mypy", target]
+            cmd = [*prefix, "mypy"]
+            if mypy_strict:
+                cmd.append("--strict")
+            cmd.append(target)
+            return cmd
         if typechecker == "pyright":
-            return [*prefix, "pyright"]
+            cmd = [*prefix, "pyright"]
+            if mypy_strict:
+                cmd.append("--strict")
+            return cmd
         return None
 
     if gate == "tests":
@@ -100,7 +114,7 @@ def make_command(gate: str, toolchain: dict, workspace: Path) -> list[str] | Non
             target = "tests/unit" if (workspace / "tests" / "unit").exists() else "tests"
             if not (workspace / target).exists():
                 return None
-            return [*prefix, "pytest", target, "-v", "-m", "not sanity"]
+            return [*prefix, "pytest", target, "-v", "-m", "not sanity", *parallel_args]
         if test == "tox":
             return ["tox"]
         return None
@@ -120,6 +134,7 @@ def make_command(gate: str, toolchain: dict, workspace: Path) -> list[str] | Non
                 "-q",
                 "-m",
                 "not sanity",
+                *parallel_args,
             ]
         return None
 
@@ -128,7 +143,7 @@ def make_command(gate: str, toolchain: dict, workspace: Path) -> list[str] | Non
             target = "tests/sanity"
             if not (workspace / target).exists():
                 return None
-            return [*prefix, "pytest", target, "-v", "-m", "sanity"]
+            return [*prefix, "pytest", target, "-v", "-m", "sanity", *parallel_args]
         return None
 
     return None
@@ -161,8 +176,8 @@ def parse_summary(gate: str, stdout: str, workspace: Path) -> dict:
     return summary
 
 
-def run_gate(gate: str, run_dir: Path, phase: int, workspace: Path, toolchain: dict, threshold: float | None) -> dict:
-    cmd = make_command(gate, toolchain, workspace)
+def run_gate(gate: str, run_dir: Path, phase: int, workspace: Path, toolchain: dict, threshold: float | None, options: dict | None = None) -> dict:
+    cmd = make_command(gate, toolchain, workspace, options)
     started = now_iso()
 
     if cmd is None:
@@ -226,6 +241,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--workspace", required=True, help="Path to the project workspace")
     parser.add_argument("--toolchain", default=None, help="Path to detected toolchain JSON")
     parser.add_argument("--threshold", type=float, default=None, help="Numeric threshold for gates that need one (coverage)")
+    parser.add_argument("--effective-thresholds", default=None, help="Path to effective_thresholds.json (per-run options)")
     args = parser.parse_args(argv)
 
     run_dir = Path(args.run_dir).resolve()
@@ -241,7 +257,21 @@ def main(argv: list[str]) -> int:
     stderr_path = gates_dir / f"{args.gate}.stderr.txt"
 
     toolchain = load_toolchain(Path(args.toolchain).resolve() if args.toolchain else None)
-    result = run_gate(args.gate, run_dir, args.phase, workspace, toolchain, args.threshold)
+
+    # Default to {run_dir}/effective_thresholds.json when not given explicitly.
+    eff_path = (
+        Path(args.effective_thresholds).resolve()
+        if args.effective_thresholds
+        else run_dir / "effective_thresholds.json"
+    )
+    options: dict = {}
+    if eff_path.exists():
+        try:
+            options = json.loads(eff_path.read_text(encoding="utf-8")) or {}
+        except json.JSONDecodeError:
+            options = {}
+
+    result = run_gate(args.gate, run_dir, args.phase, workspace, toolchain, args.threshold, options)
 
     stdout_path.write_text(result.pop("_stdout", "") or "", encoding="utf-8")
     stderr_path.write_text(result.pop("_stderr", "") or "", encoding="utf-8")

@@ -255,7 +255,7 @@ def save_state(run_dir: Path, state: dict) -> None:
 def ensure_phase_counters(state: dict, phase: int) -> None:
     keys = [
         "lint_test_self_correct", "code_review_minor", "code_review_major",
-        "sanity", "design_self", "pr_create_revise",
+        "sanity", "design_arch_self", "design_revise", "pr_create_revise",
     ]
     for k in keys:
         ck = f"{k}__phase_{phase}"
@@ -264,9 +264,10 @@ def ensure_phase_counters(state: dict, phase: int) -> None:
 
 
 # In-stage retry counters reset on backtrack (one fresh attempt per re-entry).
-# Verdict-type counters (code_review_minor/major) are intentionally cumulative.
+# Verdict-type counters (code_review_minor/major) and user-revise counters
+# (design_revise, pr_create_revise) are intentionally cumulative.
 IN_STAGE_RETRY_COUNTERS = {
-    "design":      "design_self",
+    "design":      "design_arch_self",
     "lint-test":   "lint_test_self_correct",
     "sanity-test": "sanity",
 }
@@ -276,7 +277,7 @@ def _revise_counter_keys(stage: str, phase: int | None) -> tuple[str, str] | Non
     """Return (counter_key, cap_key) for a user-revise on this stage, or None.
 
     For phase-level stages with a per-phase counter, returns the resolved key
-    (e.g. ``design_self__phase_2``). For run-level stages, returns the bare key.
+    (e.g. ``design_revise__phase_2``). For run-level stages, returns the bare key.
     """
     if stage == "planning":
         return ("planning_revise", "planning_revise")
@@ -285,7 +286,7 @@ def _revise_counter_keys(stage: str, phase: int | None) -> tuple[str, str] | Non
     if stage == "phase-split":
         return ("phase_split_revise", "phase_split_revise")
     if stage == "design" and phase is not None:
-        return (f"design_self__phase_{phase}", "design_self")
+        return (f"design_revise__phase_{phase}", "design_revise")
     if stage == "pr-create" and phase is not None:
         return (f"pr_create_revise__phase_{phase}", "pr_create_revise")
     return None
@@ -398,6 +399,37 @@ def ensure_workspace_repo(ws: Path, state: dict) -> None:
     """
     spec = state.get("interview_spec", {})
     mode = spec.get("mode")
+
+    # In maintenance mode the workspace must already exist as a git repo. We
+    # refuse to mkdir it because a typo'd project_path would otherwise leave
+    # an empty directory on the user's filesystem and pass on the next run.
+    if mode == "maintenance":
+        if not ws.exists():
+            raise RuntimeError(
+                f"maintenance workspace {ws} does not exist. "
+                f"check interview_spec.project_path."
+            )
+        if not (ws / ".git").exists():
+            raise RuntimeError(
+                f"maintenance workspace {ws} is not a git repo and harness will not auto-init it"
+            )
+        try:
+            top = subprocess.run(
+                ["git", "rev-parse", "--show-toplevel"],
+                cwd=str(ws), capture_output=True, text=True, check=True,
+            ).stdout.strip()
+        except subprocess.CalledProcessError:
+            raise RuntimeError(
+                f"maintenance workspace {ws} is not a git repo and harness will not auto-init it"
+            )
+        if Path(top).resolve() == harness_root().resolve():
+            raise RuntimeError(
+                f"maintenance workspace {ws} resolves to the harness repo itself. "
+                f"Refusing to operate on the harness's own git."
+            )
+        return
+
+    # mode == "new" (or anything else we own): safe to mkdir.
     ws.mkdir(parents=True, exist_ok=True)
 
     git_dir = ws / ".git"
@@ -417,25 +449,6 @@ def ensure_workspace_repo(ws: Path, state: dict) -> None:
              "commit", "-q", "-m", "chore: initial workspace scaffold"],
             cwd=str(ws), check=True,
         )
-        return
-
-    if mode == "maintenance":
-        # The user-supplied project_path must be a real git repo on its own.
-        # If walking up from ws lands at harness_root's .git, refuse.
-        try:
-            top = subprocess.run(
-                ["git", "rev-parse", "--show-toplevel"],
-                cwd=str(ws), capture_output=True, text=True, check=True,
-            ).stdout.strip()
-        except subprocess.CalledProcessError:
-            raise RuntimeError(
-                f"maintenance workspace {ws} is not a git repo and harness will not auto-init it"
-            )
-        if Path(top).resolve() == harness_root().resolve():
-            raise RuntimeError(
-                f"maintenance workspace {ws} resolves to the harness repo itself. "
-                f"Refusing to operate on the harness's own git."
-            )
         return
 
 
@@ -1054,10 +1067,10 @@ def route(stage: str, run_dir: Path, phase: int | None, state: dict, eff: dict) 
                 extra={"verdict": verdict_in_design, "valid": sorted(VALID_DESIGN_VERDICT_LABELS)},
             )
         if verdict_in_design == "needs_revision":
-            ck = f"design_self__phase_{phase}"
+            ck = f"design_arch_self__phase_{phase}"
             state["counters"][ck] += 1
-            if state["counters"][ck] > caps.get("design_self", 2):
-                return _escalate(run_dir, state, "design_self_cap", stage, phase)
+            if state["counters"][ck] > caps.get("design_arch_self", 2):
+                return _escalate(run_dir, state, "design_arch_self_cap", stage, phase)
             write_feedback(stage_dir(run_dir, stage, phase), "design-self",
                            "architect-reviewer requested revision; see design.md issues")
             save_state(run_dir, state)
@@ -1278,8 +1291,12 @@ def _backtrack_to(run_dir: Path, state: dict, target_stage: str, phase: int | No
     # gates dir is orchestrator-owned and tied to the phase, not a stage
     # but we keep gates/ since later stages will rewrite them as needed.
 
-    # 3. Pop last verdict (history-appending stage re-entry)
-    if state["verdict_history"]:
+    # 3. Pop last verdict only when the backtrack was triggered by a
+    #    verdict-appending stage. code-review is the only such stage today;
+    #    lint-test cap and sanity-fail backtrack without appending, so popping
+    #    here would clobber an unrelated prior verdict (e.g., the previous
+    #    phase's code-review entry).
+    if source.startswith("code-review-") and state["verdict_history"]:
         state["verdict_history"].pop()
 
     # 4. Write feedback for the resume target stage

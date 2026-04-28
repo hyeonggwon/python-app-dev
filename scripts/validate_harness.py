@@ -90,6 +90,7 @@ def parse_orchestrator() -> dict:
     tree = ast.parse(ORCHESTRATOR.read_text(encoding="utf-8"))
     wanted = {
         "STAGE_DIRS", "STAGE_TOOLS", "STAGE_REQUIRED_AUX_OUTPUTS",
+        "STAGE_OWNED_PATTERNS",
         "STAGE_PRIMARY_OUTPUT", "STAGE_MARKER",
         "RUN_LEVEL_STAGES", "PHASE_LEVEL_STAGES",
         "VALID_VERDICT_LABELS", "VALID_LOOP_TARGETS", "VERDICT_TO_LOOP",
@@ -263,10 +264,31 @@ class Failures:
 
 def check_stage_table_consistency(orch: dict, fails: Failures) -> None:
     keys = set(orch["STAGE_DIRS"])
-    for table_name in ("STAGE_TOOLS", "STAGE_PRIMARY_OUTPUT", "STAGE_MARKER"):
+    for table_name in (
+        "STAGE_TOOLS", "STAGE_PRIMARY_OUTPUT", "STAGE_MARKER",
+        "STAGE_OWNED_PATTERNS",
+    ):
         diff = keys.symmetric_difference(set(orch[table_name]))
         if diff:
             fails.add(f"{table_name} keys differ from STAGE_DIRS: {sorted(diff)}")
+    # Each stage's primary_output must appear in its OWNED_PATTERNS, otherwise
+    # backtrack will leak the prior run's primary output into the re-entry.
+    for stage, primary in orch["STAGE_PRIMARY_OUTPUT"].items():
+        patterns = orch["STAGE_OWNED_PATTERNS"].get(stage, [])
+        if primary not in patterns:
+            fails.add(
+                f"[{stage}] primary output `{primary}` not in STAGE_OWNED_PATTERNS — "
+                f"backtrack will not clear it"
+            )
+    # Required aux outputs must also appear in OWNED_PATTERNS for the same reason.
+    for stage, aux_list in orch["STAGE_REQUIRED_AUX_OUTPUTS"].items():
+        patterns = orch["STAGE_OWNED_PATTERNS"].get(stage, [])
+        for aux in aux_list:
+            if aux not in patterns:
+                fails.add(
+                    f"[{stage}] required aux `{aux}` not in STAGE_OWNED_PATTERNS — "
+                    f"backtrack will not clear it"
+                )
     rl = set(orch["RUN_LEVEL_STAGES"])
     pl = set(orch["PHASE_LEVEL_STAGES"])
     if rl & pl:

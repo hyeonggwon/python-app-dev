@@ -93,7 +93,7 @@ deep-interview
 | ② | requirements 직후 | US/NFR 추가·삭제·우선순위 |
 | ③ | phase-split 직후 | Phase 순서/범위/MVP 경계 확정 |
 | ④ | 각 phase의 design 직후 | 모듈 구조·인터페이스·외부 의존 확정 |
-| ⑤ | 각 phase의 pr-create 직전 | PR 본문 검토 + push/create 여부 |
+| ⑤ | 각 phase의 pr-create 직후 | PR 본문 검토 + push/create 여부 (manual 모드면 사용자가 직접 push) |
 
 deep-interview에서 각각 on/off 가능. off된 지점은 자동 통과(자동 confirm).
 

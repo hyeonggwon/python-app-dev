@@ -75,6 +75,8 @@
 3. `scripts/orchestrate.py`:
    - `STAGE_DIRS[<stage>]` 추가
    - `STAGE_TOOLS[<stage>]` 추가
+   - `STAGE_PRIMARY_OUTPUT[<stage>]` 추가
+   - `STAGE_OWNED_PATTERNS[<stage>]` — backtrack 시 unlink할 산출물 glob들. **primary output 도 반드시 포함**해야 backtrack 청소가 동작한다. 누락 시 stale 산출물이 다음 iteration 으로 흘러간다.
    - `STAGE_REQUIRED_AUX_OUTPUTS[<stage>]` (멀티-아웃풋이면)
    - 카운터 키 (필요시)
    - 라우팅 분기

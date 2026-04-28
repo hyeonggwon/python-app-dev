@@ -16,12 +16,14 @@ caps:
   # Sanity test failure → design loopback (per phase)
   sanity_loop: 2
 
-  # User-intervention revise loops. design_self also covers architect-reviewer
-  # self-loops on the same phase's design — they share the cap.
+  # User-intervention revise loops. design has two separate budgets so a
+  # backtrack-driven re-entry (which legitimately resets the architect-reviewer
+  # in-stage retry) does not also wipe the cumulative user-revise count.
   planning_revise: 2
   requirements_revise: 2
   phase_split_revise: 2
-  design_self: 2
+  design_arch_self: 2   # architect-reviewer self-loop (in-stage retry; resets on backtrack)
+  design_revise: 2      # user revise on design (cumulative across backtracks within the phase)
   pr_create_revise: 2
 
   # Runaway cap (global). Increments on every stage entry; escalates when crossed.

@@ -73,7 +73,8 @@
 - `caps.code_review_minor_loop` (기본 3)
 - `caps.code_review_major_loop` (기본 2)
 - `caps.sanity_loop` (기본 2)
-- `caps.design_self` (기본 2) — architect-reviewer 자가 루프 + design 사용자 revise 공용
+- `caps.design_arch_self` (기본 2) — architect-reviewer 자가 루프 (in-stage retry; backtrack 시 reset)
+- `caps.design_revise` (기본 2) — design 사용자 revise (phase 내 누적; backtrack 에도 유지)
 - `caps.planning_revise` / `requirements_revise` / `phase_split_revise` / `pr_create_revise` (기본 2)
 - `caps.total_stages` (기본 200) — runaway 가드
 
