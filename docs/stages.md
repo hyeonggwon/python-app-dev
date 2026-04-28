@@ -122,7 +122,7 @@ STAGE_DIRS = {
 | **프롬프트 스케치** | (a) 원격 브랜치 목록 조회 (b) 티켓 있으면 `dev_matthew_<ticket>_<NN>` 다음 번호 결정 (c) 티켓 없으면 `<change_kind>/<keyword>` (keyword는 design title에서 도출, kebab-case) (d) `git checkout -b <name>` (e) `branch.txt`에 기록. **idempotent**: 이미 같은 이름 브랜치가 있으면 checkout만. 마지막 줄 `BRANCH_CREATE_DONE: ...` |
 | **참조** | (없음) |
 | **검증** | (a) `branch.txt` 존재 (b) 그 이름의 브랜치가 현재 HEAD (c) marker |
-| **루프백 + cap** | 실패 시 자기 재실행 (cap=2). 그 후 escalation |
+| **루프백 + cap** | 실패 시 escalation (자기 재실행 없음 — 결정적 단계라 LLM 재시도가 도움이 되지 않음) |
 | **사용자 개입** | (없음) |
 | **도구** | `Read, Write, Bash(git checkout:*, git branch:*, git switch:*, git ls-remote:*, git for-each-ref:*, git rev-parse:*)` |
 
@@ -135,7 +135,7 @@ STAGE_DIRS = {
 | **프롬프트 스케치** | design.md를 따라 코드와 unit test 작성. 작은 논리 단위로 `git add` + `git commit` 수행 (커밋 메시지는 `tacit-knowledge.md §7-2`). 작성 후 `git log --oneline`로 SHA 목록을 `implementation.md`에 기록. 마지막 줄 `IMPLEMENT_DONE: ...` |
 | **참조** | (없음) |
 | **검증** | (a) `implementation.md` 존재 (b) 파일 안에 ≥ 1 커밋 SHA (c) `git diff <base>..HEAD` 가 비어있지 않음 (d) marker |
-| **루프백 + cap** | install 게이트 fail 시 자기 루프백 (cap=3). code-review minor 시 자기 루프백 (cap=3) |
+| **루프백 + cap** | code-review minor 시 자기 루프백 (cap=3, `code_review_minor__phase_{N}`). install/lint/format/types/tests/coverage 게이트는 후속 `lint-test` stage 의 자기교정 루프(cap=5)에서 처리 — implement 단계에는 자체 게이트 게이트백이 없음 |
 | **사용자 개입** | (없음) |
 | **도구** | `Read, Write, Edit, Glob, Grep, Bash(uv:*, ruff:*, mypy:*, pytest:*, git add:*, git commit:*, git status, git log:*, git diff:*, git rev-parse:*)` |
 
@@ -188,7 +188,7 @@ STAGE_DIRS = {
 | **프롬프트 스케치** | 변경된 코드·새로 추가된 인터페이스에 따라 (1) README 업데이트 (2) 공개 API docstring (3) 필요시 ADR 추가. 모든 변경 파일은 commit. 마지막 줄 `DOCUMENT_DONE: ...` |
 | **참조** | (없음) |
 | **검증** | (a) `docs-changes.md` 존재 (b) marker. 문서 변경이 없는 phase 라면 `docs-changes.md` 본문에 그 사유를 기록한다 (orchestrator 는 본문 형식을 강제하지 않음 — 사람이 PR 리뷰 시 검토) |
-| **루프백 + cap** | 실패 시 자기 재실행 (cap=2) |
+| **루프백 + cap** | 실패 시 escalation (자기 재실행 없음) |
 | **사용자 개입** | (없음) |
 | **도구** | `Read, Write, Edit, Glob, Grep, Bash(git add:*, git commit:*, git status, git diff:*)` |
 
@@ -201,7 +201,7 @@ STAGE_DIRS = {
 | **프롬프트 스케치** | PR 본문 작성: 제목 = 첫 커밋 제목과 동일 형식 (`<type>(<ticket>): <subject>` 또는 `<type>: <subject>`). 본문에 `## Summary`, `## Phase 산출물 링크`, `## Test plan`, `Refs:` 푸터. `pr_mode == auto`이면 `git push -u origin <branch>` + `gh pr create --title ... --body-file pr.md --base <base> [--reviewer ...] [--label ...]` 실행 후 PR URL을 `pr-url.txt`에 기록. `manual`이면 push/create는 사용자 책임. 마지막 줄 `PR_CREATE_DONE: ...` |
 | **참조** | (없음) |
 | **검증** | (a) `pr.md` 존재 + 본문 형식 (b) `pr_mode == auto`면 `pr-url.txt` 존재 + 유효한 GitHub PR URL 정규식 (c) marker |
-| **루프백 + cap** | 사용자 개입 ⑤ 시 자기 루프백 (cap=2). gh push 실패 시 자기 재시도 (cap=2) |
+| **루프백 + cap** | 사용자 개입 ⑤ revise 시 자기 루프백 (cap=2, `pr_create_revise__phase_{N}`). 그 외 실패는 escalation |
 | **사용자 개입** | ⑤ `interventions.pr_per_phase == on`이면 **직후** (post-stage 승인). 기대 입력: `approve` / `revise(피드백)` |
 | **도구** | `Read, Write, Bash(git push:*, git rev-parse:*, gh pr:*, gh repo:*)` |
 
@@ -236,7 +236,7 @@ STAGE_DIRS = {
 | ④ design (옵션) | `decision: approve\|revise`, `feedback: \|<텍스트>` |
 | ⑤ pr-create | `decision: approve\|revise`, `feedback: \|<텍스트>` |
 
-메인 세션은 사용자 답변을 `{run_dir}/<stage_dir>/<stage>/decision.md`에 기록하고 `orchestrate.py <stage> --resume` 호출.
+메인 세션은 사용자 답변을 `{run_dir}/state.json` 의 `user_input` 키에 머지(예: `{"decision":"approve"}` 또는 `{"decision":"revise","feedback":"..."}` + 위 표의 stage 별 추가 키)한 뒤 `orchestrate.py <stage> --resume` 으로 같은 stage 를 재호출한다. orchestrator 는 `_handle_resume` 에서 이 키를 소비하고 비운 다음 라우팅한다 (별도 `decision.md` 파일은 쓰지 않는다).
 
 ---
 
@@ -267,12 +267,9 @@ VERDICT_TO_LOOP = {
   "code_review_minor__phase_{N}": 0,
   "code_review_major__phase_{N}": 0,
   "sanity__phase_{N}": 0,
-  "install__phase_{N}": 0,
   "design_arch_self__phase_{N}": 0,
   "design_revise__phase_{N}": 0,
-  "branch_create__phase_{N}": 0,
-  "document__phase_{N}": 0,
-  "pr_create__phase_{N}": 0,
+  "pr_create_revise__phase_{N}": 0,
   "planning_revise": 0,
   "requirements_revise": 0,
   "phase_split_revise": 0,
@@ -280,6 +277,12 @@ VERDICT_TO_LOOP = {
 }
 ```
 
+(`branch-create`, `implement`, `document`, `pr-create` 자기 재실행 카운터는 두지 않는다 — 위 stage 들은 자기 루프백 루트가 없고, 실패 시 곧장 escalation 으로 빠진다.)
+
 `total_stages`는 runaway cap (전역). 도달 + 마지막 verdict=pass면 정상 종료, 도달 + 비-pass면 escalation.
 
-Backtrack(예: `code-review.major → design`) 시 해당 phase의 후속 stage에 누적된 verdict_history와 stage 산출물 + orchestrator 산출물(`phase-{N}/gates/`, `verdict.json`)을 함께 비운다 (`clear_stage_outputs`).
+Backtrack 시 동작:
+- **stage 산출물**: target 다음 stage들의 `STAGE_OWNED_PATTERNS` (LLM 산출물 + 해당 stage 가 소유한 게이트 JSON 포함, 예: lint-test 의 `gates/install.json`, sanity-test 의 `gates/sanity.json`)을 unlink.
+- **stage_outputs**: target 이후 stage 의 항목만 pop (target 자체는 보존 — revise 시 LLM 이 기존 산출물을 참고해 수정).
+- **in-stage 카운터**: target 과 cleared stage 들의 `IN_STAGE_RETRY_COUNTERS` 만 0 으로 리셋 (verdict 누적 카운터 `code_review_minor/major`, user-revise 카운터는 cumulative 유지).
+- **verdict_history**: `code-review-*` 가 트리거한 backtrack 일 때만 마지막 엔트리 1개 pop. `lint-test-cap` 이나 `sanity-fail` backtrack 은 verdict_history 를 건드리지 않는다 (그 두 경로는 verdict 를 추가하지 않으므로 pop 하면 직전 phase 의 무관한 verdict 를 잃게 된다).

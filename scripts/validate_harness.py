@@ -22,18 +22,20 @@ What it checks (each block has a `check_*` function):
   6.  The `code-review` prompt teaches the exact verdict labels and
       loop_target values that the orchestrator routes on
       (VALID_VERDICT_LABELS, VALID_LOOP_TARGETS, VERDICT_TO_LOOP).
-  7.  Stage directory names in STAGE_DIRS match the kebab-case stage keys
+  7.  The `design` prompt teaches the exact verdict labels the orchestrator
+      enforces on design.md front-matter (VALID_DESIGN_VERDICT_LABELS).
+  8.  Stage directory names in STAGE_DIRS match the kebab-case stage keys
       (no short-form / long-form drift).
-  8.  Marker line strings in STAGE_MARKER appear in their respective prompts
+  9.  Marker line strings in STAGE_MARKER appear in their respective prompts
       (each prompt must instruct the LLM to print its marker).
-  9.  Authority paths cited in CLAUDE.md and stage prompts (`docs/...`)
+  10. Authority paths cited in CLAUDE.md and stage prompts (`docs/...`)
       exist on disk.
-  10. No absolute paths (`/home/...`, `/Users/...`, `/opt/...`) leak into
+  11. No absolute paths (`/home/...`, `/Users/...`, `/opt/...`) leak into
       any canonical file under `docs/` or `scripts/prompts/`.
-  11. Decision template keys produced by `_intervention_schema_for` are a
-      subset of what the corresponding deep-interview/orchestration code
-      reads back (currently checks only that the schema dict is well-formed
-      JSON-able).
+  12. `_intervention_schema_for` is total over the user-toggleable stages
+      (planning, requirements, phase-split, design, pr-create). Note: this
+      check confirms branch coverage only; cross-checking the schema dict
+      keys against `_handle_resume`'s reads is not currently performed.
 
 The script is invoked from the repo root and inspects:
   - scripts/orchestrate.py            (parsed via AST)
@@ -94,6 +96,7 @@ def parse_orchestrator() -> dict:
         "STAGE_PRIMARY_OUTPUT", "STAGE_MARKER",
         "RUN_LEVEL_STAGES", "PHASE_LEVEL_STAGES",
         "VALID_VERDICT_LABELS", "VALID_LOOP_TARGETS", "VERDICT_TO_LOOP",
+        "VALID_DESIGN_VERDICT_LABELS",
     }
     out: dict = {}
     for node in tree.body:
@@ -388,6 +391,29 @@ def check_verdict_enum_in_review_prompt(orch: dict, fails: Failures) -> None:
                 break
 
 
+def check_design_verdict_enum_in_prompt(orch: dict, fails: Failures) -> None:
+    """design.md prompt must teach the exact label set route() enforces.
+
+    `route()` reads the front-matter `verdict` field of design.md and rejects
+    any value not in VALID_DESIGN_VERDICT_LABELS. If the prompt and the
+    enum drift, every design run silently escalates as `verdict_invalid`.
+    """
+    prompt = PROMPTS_DIR / "design.md"
+    if not prompt.exists():
+        return
+    labels = orch.get("VALID_DESIGN_VERDICT_LABELS")
+    if not labels:
+        fails.add("VALID_DESIGN_VERDICT_LABELS not parsed from orchestrator")
+        return
+    text = prompt.read_text(encoding="utf-8")
+    for label in labels:
+        if label not in text:
+            fails.add(
+                f"design prompt does not teach front-matter verdict label "
+                f"`{label}` (VALID_DESIGN_VERDICT_LABELS)"
+            )
+
+
 def check_stage_dir_naming(orch: dict, fails: Failures) -> None:
     for stage in orch["STAGE_DIRS"]:
         if stage != stage.lower():
@@ -490,6 +516,7 @@ CHECKS = [
     ("tokens covered",              check_tokens_covered),
     ("aux outputs mentioned",       check_aux_outputs_mentioned),
     ("verdict enum in code-review", check_verdict_enum_in_review_prompt),
+    ("verdict enum in design",      check_design_verdict_enum_in_prompt),
     ("stage-dir naming",            check_stage_dir_naming),
     ("marker in prompt",            check_marker_in_prompt),
 ]

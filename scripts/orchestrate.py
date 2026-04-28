@@ -851,7 +851,13 @@ def run_lint_test_gates(run_dir: Path, phase: int | None, state: dict, eff: dict
         ]
         if gate == "coverage":
             cmd += ["--threshold", str(threshold)]
-        subprocess.run(cmd, capture_output=True, text=True)
+        # Outer guard: run_gate.py has its own per-gate timeout (max 1800s for
+        # tests/coverage). We add ~120s headroom for json/file I/O before
+        # giving up, so a wedged child process can't pin the orchestrator.
+        try:
+            subprocess.run(cmd, capture_output=True, text=True, timeout=1920)
+        except subprocess.TimeoutExpired:
+            pass
         gate_path = run_dir / f"phase-{phase}" / "gates" / f"{gate}.json"
         if gate_path.exists():
             data = json.loads(gate_path.read_text(encoding="utf-8"))
@@ -880,7 +886,11 @@ def run_sanity_gate(run_dir: Path, phase: int | None, state: dict) -> dict | Non
         "--workspace", str(workspace),
         "--toolchain", str(toolchain_path),
     ]
-    subprocess.run(cmd, capture_output=True, text=True)
+    # See run_lint_test_gates: outer timeout = inner cap (900s for sanity) + headroom.
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, timeout=1020)
+    except subprocess.TimeoutExpired:
+        pass
     gate_path = run_dir / f"phase-{phase}" / "gates" / "sanity.json"
     if gate_path.exists():
         return json.loads(gate_path.read_text(encoding="utf-8"))

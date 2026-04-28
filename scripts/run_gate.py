@@ -32,6 +32,18 @@ from pathlib import Path
 
 GATES = {"install", "lint", "format", "types", "tests", "coverage", "sanity"}
 
+# Per-gate timeout in seconds. A hung tool (mypy/pytest looping on a bad fixture)
+# would otherwise block the whole orchestrator. On expiry we record a fail JSON.
+GATE_TIMEOUT_SECONDS = {
+    "install":  600,
+    "lint":     180,
+    "format":   180,
+    "types":    900,
+    "tests":   1800,
+    "coverage":1800,
+    "sanity":   900,
+}
+
 
 def now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
@@ -180,6 +192,17 @@ def run_gate(gate: str, run_dir: Path, phase: int, workspace: Path, toolchain: d
     cmd = make_command(gate, toolchain, workspace, options)
     started = now_iso()
 
+    # Coverage emits ``.coverage.json`` to workspace root. If a previous round
+    # crashed before pytest could rewrite it, parse_summary would happily reuse
+    # stale data and fake a pass. Always clear it first.
+    if gate == "coverage":
+        stale = workspace / ".coverage.json"
+        if stale.exists():
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+
     if cmd is None:
         # sanity gate must have something to run — a missing tests/sanity/ is a
         # fail, not a silent pass. design loopback will surface the gap.
@@ -203,12 +226,29 @@ def run_gate(gate: str, run_dir: Path, phase: int, workspace: Path, toolchain: d
         }
         return result
 
-    proc = subprocess.run(
-        cmd,
-        cwd=str(workspace),
-        capture_output=True,
-        text=True,
-    )
+    timeout = GATE_TIMEOUT_SECONDS.get(gate, 600)
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(workspace),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as e:
+        return {
+            "name": gate,
+            "command": " ".join(shlex.quote(c) for c in cmd),
+            "exit_code": None,
+            "passed": False,
+            "skipped": False,
+            "started_at": started,
+            "finished_at": now_iso(),
+            "summary": {"timeout_seconds": timeout},
+            "timed_out": True,
+            "_stdout": (e.stdout or b"").decode("utf-8", errors="replace") if isinstance(e.stdout, (bytes, bytearray)) else (e.stdout or ""),
+            "_stderr": (e.stderr or b"").decode("utf-8", errors="replace") if isinstance(e.stderr, (bytes, bytearray)) else (e.stderr or ""),
+        }
 
     finished = now_iso()
     passed = proc.returncode == 0

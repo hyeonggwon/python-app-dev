@@ -102,5 +102,7 @@ issue must be an object with `location` / `description` / `suggestion`.
 ## Output
 
 ```
-CODE_REVIEW_DONE: {stage_dir}/verdict.json
+CODE_REVIEW_DONE: {stage_dir}/review.md
 ```
+
+(Marker points to the narrative `review.md` — orchestrator's `STAGE_PRIMARY_OUTPUT["code-review"]`. The machine-readable `verdict.json` is required as an aux output and the orchestrator reads it directly from `{stage_dir}/verdict.json`.)
