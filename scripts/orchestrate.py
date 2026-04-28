@@ -484,7 +484,15 @@ def merge_effective_thresholds(state: dict) -> dict:
     if spec.get("security_review"):
         thresholds["security_review"] = True
 
-    # Per-run cap overrides
+    # Per-run cap overrides. Two sources, in this precedence:
+    #   1. interview/spec.md.caps (parsed by deep-interview into
+    #      state.interview_spec.caps) — the documented user-facing knob
+    #      (CLAUDE.md, interview-guide.md §6/§7).
+    #   2. state.overrides — programmatic last-word override.
+    # Earlier revisions only honored (2), which silently dropped any caps
+    # the user set in spec.md. Apply both, with state.overrides winning.
+    for k, v in (spec.get("caps", {}) or {}).items():
+        caps[k] = v
     for k, v in (state.get("overrides", {}) or {}).items():
         caps[k] = v
 
@@ -543,17 +551,26 @@ def invoke_claude(prompt_path: Path, stage: str, run_dir: Path, phase: int | Non
         "--permission-mode", "acceptEdits",
     ]
 
-    # Workspace separation (CRITICAL): phase-level stages run in the project workspace,
-    # NOT the harness root. Prevents git operations from leaking into the harness repo.
+    # Workspace separation (CRITICAL): any stage that may invoke git must run
+    # in the project workspace, NOT the harness root. Otherwise `git log` /
+    # `git rev-parse` walks up to the harness repo's own .git and returns
+    # harness commits — violating the workspace-vs-harness separation that
+    # CLAUDE.md emphasizes.
+    #
+    # All phase-level stages need the workspace cwd. delivery is run-level but
+    # also reads phase commit history (its STAGE_TOOLS includes Bash(git log:*)
+    # / Bash(git rev-parse:*) and its prompt declares Workspace cwd).
     cwd: Path
-    if stage in PHASE_LEVEL_STAGES:
+    needs_workspace_cwd = stage in PHASE_LEVEL_STAGES or stage == "delivery"
+    if needs_workspace_cwd:
         ws = resolve_workspace(state)
         if ws is None:
-            return 2, "ERROR: phase-level stage requires resolvable workspace"
+            return 2, f"ERROR: stage '{stage}' requires resolvable workspace"
         ensure_workspace_repo(ws, state)
         cwd = ws
     else:
-        # Run-level stages don't touch git; safe to run from run_dir for output locality
+        # Pure run-level stages (planning/requirements/phase-split) don't touch git;
+        # safe to run from run_dir for output locality.
         cwd = run_dir
 
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1137,6 +1154,12 @@ def route(stage: str, run_dir: Path, phase: int | None, state: dict, eff: dict) 
                 return _escalate(run_dir, state, "design_arch_self_cap", stage, phase)
             write_feedback(stage_dir(run_dir, stage, phase), "design-self",
                            "architect-reviewer requested revision; see design.md issues")
+            # Clear the just-failed design.md so a partial overwrite on the next
+            # iteration cannot leave stale `verdict: pass` front matter visible
+            # to this routing block. Same rationale as _backtrack_to step 2.
+            # feedback.md is not in STAGE_OWNED_PATTERNS and survives.
+            clear_stage_outputs(run_dir, ["design"], phase)
+            state["stage_outputs"].pop(stage_key("design", phase), None)
             save_state(run_dir, state)
             emit_result("loopback", to="design", phase=phase, count=state["counters"][ck])
             return 0
