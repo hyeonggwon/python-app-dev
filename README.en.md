@@ -14,7 +14,6 @@ cd python-app-dev
 
 What `install.sh` does:
 - Sets `git core.hooksPath = .githooks` (enforces `validate_harness.py`)
-- Symlinks `.claude/skills/{orchestrate,deep-interview}` into `~/.claude/skills/`
 - Verifies required tools (`python3 / claude / git`); warns on optional (`uv / gh`)
 - Runs `validate_harness.py` once for sanity
 

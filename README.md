@@ -14,7 +14,6 @@ cd python-app-dev
 
 `install.sh` 가 하는 일:
 - `git core.hooksPath = .githooks` (`validate_harness.py` 강제)
-- `.claude/skills/{orchestrate,deep-interview}` 를 `~/.claude/skills/` 로 symlink
 - `python3 / claude / git` 필수 확인, `uv / gh` 는 옵션 경고
 - `validate_harness.py` 1회 실행으로 정합성 확인
 
