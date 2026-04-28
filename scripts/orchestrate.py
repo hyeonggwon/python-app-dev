@@ -140,6 +140,7 @@ PHASE_LEVEL_STAGES = set(STAGE_DIRS) - RUN_LEVEL_STAGES
 # ---------------------------------------------------------------------------
 
 VALID_VERDICT_LABELS = {"pass", "minor", "major", "critical"}
+VALID_DESIGN_VERDICT_LABELS = {"pass", "needs_revision"}
 VALID_LOOP_TARGETS = {"none", "implement", "design", "escalation"}
 
 VERDICT_TO_LOOP = {
@@ -568,6 +569,28 @@ def write_escalation(run_dir: Path, trigger: str, context: dict) -> Path:
     return esc
 
 
+def _append_run_index(state: dict, final_status: str) -> None:
+    """Append exactly one line per terminating run to outputs/.index.jsonl.
+
+    Called from terminal points (delivery success, abort, or unrecoverable
+    escalation acknowledgement). Idempotent within a run via state["index_written"].
+    """
+    if state.get("index_written"):
+        return
+    index = harness_root() / "outputs" / ".index.jsonl"
+    index.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "run_id": state.get("run_id"),
+        "harness": state.get("harness", "python-app-dev"),
+        "final_status": final_status,
+        "escalation_triggers": list(state.get("escalation_triggers", [])),
+        "ended_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+    }
+    with index.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    state["index_written"] = True
+
+
 def _recent_escalations_block(trigger: str) -> list[str]:
     index = harness_root() / "outputs" / ".index.jsonl"
     if not index.exists():
@@ -913,7 +936,12 @@ def route(stage: str, run_dir: Path, phase: int | None, state: dict, eff: dict) 
     # design: self-loop on `verdict: needs_revision` in front matter
     if stage == "design":
         primary = stage_primary_output(run_dir, stage, phase)
-        verdict_in_design = _read_front_matter_field(primary, "verdict") or "pass"
+        verdict_in_design = (_read_front_matter_field(primary, "verdict") or "pass").strip().lower()
+        if verdict_in_design not in VALID_DESIGN_VERDICT_LABELS:
+            return _escalate(
+                run_dir, state, "verdict_invalid", stage, phase,
+                extra={"verdict": verdict_in_design, "valid": sorted(VALID_DESIGN_VERDICT_LABELS)},
+            )
         if verdict_in_design == "needs_revision":
             ck = f"design_self__phase_{phase}"
             state["counters"][ck] += 1
@@ -948,6 +976,15 @@ def route(stage: str, run_dir: Path, phase: int | None, state: dict, eff: dict) 
         state["awaiting_input_schema"] = _intervention_schema_for(stage)
         save_state(run_dir, state)
         emit_result("awaiting_user", stage=stage, phase=phase, schema=_intervention_schema_for(stage))
+        return 0
+
+    # Run termination: delivery success means the whole run is done.
+    if stage == "delivery":
+        final_status = "escalated_recovered" if state.get("escalation_triggers") else "done"
+        state["status"] = "done"
+        _append_run_index(state, final_status)
+        save_state(run_dir, state)
+        emit_result("pass", stage=stage, phase=phase, next=None, final_status=final_status)
         return 0
 
     # Default: pass
