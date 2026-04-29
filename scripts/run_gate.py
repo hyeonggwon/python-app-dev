@@ -79,6 +79,34 @@ def load_toolchain(path: Path | None) -> dict:
     return {}
 
 
+_TRUTHY_STRINGS = {"true", "yes", "on", "1"}
+_FALSY_STRINGS = {"false", "no", "off", "0", ""}
+
+
+def _truthy(value: object, *, default: bool = False) -> bool:
+    """Mirror of orchestrate._truthy. Kept local so run_gate stays
+    importless of orchestrate (the two scripts are intentionally independent).
+
+    `bool("false") == True` is the trap — effective_thresholds.json may carry
+    a string for any boolean toggle if the merging step upstream wasn't strict
+    about types. Coerce explicitly so an `off`/`false` string disables.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if value is None:
+        return default
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in _TRUTHY_STRINGS:
+            return True
+        if v in _FALSY_STRINGS:
+            return False
+        return default
+    return default
+
+
 def make_command(gate: str, toolchain: dict, workspace: Path, options: dict | None = None) -> list[str] | None:
     """Return the shell command (as argv) for a gate, or None to skip.
 
@@ -87,8 +115,8 @@ def make_command(gate: str, toolchain: dict, workspace: Path, options: dict | No
     (e.g. ``mypy_strict``, ``pytest_parallel``). Unknown keys are ignored.
     """
     options = options or {}
-    mypy_strict = bool(options.get("mypy_strict", False))
-    pytest_parallel = bool(options.get("pytest_parallel", False))
+    mypy_strict = _truthy(options.get("mypy_strict"), default=False)
+    pytest_parallel = _truthy(options.get("pytest_parallel"), default=False)
 
     packaging = toolchain.get("packaging", "uv")
     linter = toolchain.get("linter", "ruff") or "ruff"

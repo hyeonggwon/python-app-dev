@@ -68,7 +68,7 @@ STAGE_DIRS = {
 | **참조 skill/sub-agent** | (없음) |
 | **검증 기준** | (a) `planning.md` 존재 (b) 5개 섹션 헤더 모두 존재 (c) marker 라인 |
 | **루프백 + cap** | 사용자 개입 ① 토글 시 `feedback`이 적히면 자기 루프백 (cap=2). cap 도달 시 escalation |
-| **사용자 개입** | ① `interventions.planning == on`이면 직후. 기대 입력: `approve` / `reject(이유)` / `revise(피드백)` |
+| **사용자 개입** | ① `interventions.planning` 이 `true` 이면 직후. 기대 입력: `approve` / `reject(이유)` / `revise(피드백)` |
 | **도구 (`STAGE_TOOLS`)** | `Read, Glob, Grep, WebSearch, WebFetch, Write` |
 
 ## R2. `requirements`
@@ -81,7 +81,7 @@ STAGE_DIRS = {
 | **참조** | (없음) |
 | **검증** | (a) 파일 존재 (b) front-matter `requirements` 배열 ≥ 1 (c) 모든 항목이 `id`/`priority`/`acceptance_criteria` 보유 (d) marker |
 | **루프백 + cap** | 사용자 개입 ② 시 자기 루프백 (cap=2) |
-| **사용자 개입** | ② `interventions.requirements == on`이면 직후 |
+| **사용자 개입** | ② `interventions.requirements` 이 `true` 이면 직후 |
 | **도구** | `Read, Glob, Grep, Write` |
 
 ## R3. `phase-split`
@@ -94,7 +94,7 @@ STAGE_DIRS = {
 | **참조** | (없음) |
 | **검증** | (a) 파일 존재 (b) `phases` 배열 ≥ 1, ≤ 5 (c) `requirements.md`의 모든 `must` priority 항목이 어떤 phase에 매핑됨 (d) phase id가 1부터 연속 (e) marker |
 | **루프백 + cap** | 사용자 개입 ③ 시 자기 루프백 (cap=2) |
-| **사용자 개입** | ③ `interventions.phase_split == on`이면 직후 |
+| **사용자 개입** | ③ `interventions.phase_split` 이 `true` 이면 직후 |
 | **도구** | `Read, Write` |
 
 ---
@@ -111,7 +111,7 @@ STAGE_DIRS = {
 | **참조** | `voltagent-qa-sec:architect-reviewer` (Task 도구로 호출, self-review) |
 | **검증** | (a) 파일 존재 (b) 6개 섹션 헤더 (c) front-matter `verdict ∈ {pass, needs_revision}` (d) marker. orchestrator가 `verdict == needs_revision`이면 자기 루프백 |
 | **루프백 + cap** | self verdict `needs_revision` → 자기 루프백 (cap=2). 도달 시 escalation |
-| **사용자 개입** | ④ `interventions.design_per_phase == on`이면 직후 |
+| **사용자 개입** | ④ `interventions.design_per_phase` 이 `true` 이면 직후 |
 | **도구** | `Read, Glob, Grep, Write, Task` |
 
 ## P2. `branch-create`
@@ -203,7 +203,7 @@ STAGE_DIRS = {
 | **참조** | (없음) |
 | **검증** | (a) `pr.md` 존재 + 본문 형식 (b) marker |
 | **루프백 + cap** | 사용자 개입 ⑤ revise 시 자기 루프백 (cap=2, `pr_create_revise__phase_{N}`). 그 외 실패는 escalation |
-| **사용자 개입** | ⑤ `interventions.pr_per_phase == on`이면 **직후** (post-stage 승인). 기대 입력: `approve` / `revise(피드백)`. 승인 후 `pr_mode==auto` 면 `pr-publish` stage 진행, `pr_mode==manual` 이면 `pr-publish` 를 건너뛰고 다음 phase 또는 delivery 로 이동 |
+| **사용자 개입** | ⑤ `interventions.pr_per_phase` 이 `true` 이면 **직후** (post-stage 승인). 기대 입력: `approve` / `revise(피드백)`. 승인 후 `pr_mode==auto` 면 `pr-publish` stage 진행, `pr_mode==manual` 이면 `pr-publish` 를 건너뛰고 다음 phase 또는 delivery 로 이동 |
 | **도구** | `Read, Write` |
 
 ## P9. `pr-publish` (auto 모드 전용 — manual 에선 skip)

@@ -96,7 +96,7 @@ deep-interview
 | ④ | 각 phase의 design 직후 | 모듈 구조·인터페이스·외부 의존 확정 |
 | ⑤ | 각 phase의 pr-create 직후 | PR 본문 검토 + push/create 여부 (manual 모드면 사용자가 직접 push) |
 
-deep-interview에서 각각 on/off 가능. off된 지점은 자동 통과(자동 confirm).
+deep-interview 에서 각 지점을 `true`/`false` 로 지정. `false` 인 지점은 자동 통과(자동 confirm).
 
 ## 비범위 (이 하네스가 안 하는 것)
 

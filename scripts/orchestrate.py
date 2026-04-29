@@ -233,6 +233,46 @@ def load_config() -> dict:
     return _parse_simple_yaml(text)
 
 
+_TRUTHY_STRINGS = {"true", "yes", "on", "1"}
+_FALSY_STRINGS = {"false", "no", "off", "0", ""}
+
+
+def _truthy(value: object, *, default: bool = False) -> bool:
+    """Coerce a config-like value to bool with explicit string handling.
+
+    Why this exists: spec.md is YAML and the LLM merges it into
+    state.interview_spec as JSON. JSON has no on/off literal, so a careless
+    merge can land ``"planning": "off"`` (string). A naive ``if x:`` then sees
+    "off" as truthy and fires the very intervention the user disabled. Same
+    risk for ``security_review``, ``mypy_strict``, ``pytest_parallel``.
+
+    Recognized:
+      - bool / int / float           → bool(value)
+      - "true"/"yes"/"on"/"1"        → True   (case- and whitespace-insensitive)
+      - "false"/"no"/"off"/"0"/""    → False
+      - None                         → ``default``
+      - any other string             → ``default`` (don't guess intent)
+
+    Pass ``default=True`` for keys whose missing-or-malformed semantics is "on"
+    (e.g. user-confirmation interventions) so that an unrecognized string
+    doesn't silently disable a guard the user asked for.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if value is None:
+        return default
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in _TRUTHY_STRINGS:
+            return True
+        if v in _FALSY_STRINGS:
+            return False
+        return default
+    return default
+
+
 def _parse_simple_yaml(text: str) -> dict:
     root: dict = {}
     stack: list[tuple[int, dict]] = [(-1, root)]
@@ -253,8 +293,16 @@ def _parse_simple_yaml(text: str) -> dict:
             parent[key] = new
             stack.append((indent, new))
         else:
-            if val.lower() in ("true", "false"):
-                parent[key] = val.lower() == "true"
+            # YAML 1.1 boolean spellings — kept narrow so that `1`/`0` still
+            # parse as int (a YAML 1.2 contributor writing `coverage_threshold: 1`
+            # must not get the bool True). `_truthy` is broader because it has
+            # to handle stringly-typed values that flow in via JSON state, but
+            # *here* we own the parse.
+            low = val.lower()
+            if low in {"true", "on", "yes"}:
+                parent[key] = True
+            elif low in {"false", "off", "no"}:
+                parent[key] = False
             else:
                 try:
                     if "." in val:
@@ -507,13 +555,16 @@ def merge_effective_thresholds(state: dict) -> dict:
     spec = state.get("interview_spec", {})
     if "coverage_threshold" in spec:
         thresholds["coverage_threshold"] = spec["coverage_threshold"]
+    # Boolean toggles run through `_truthy` so a string "false"/"off" merged
+    # into spec doesn't survive into effective_thresholds.json as a truthy
+    # string for downstream readers (run_gate.make_command, code-review prompt).
     if "mypy_strict" in spec:
-        thresholds["mypy_strict"] = spec["mypy_strict"]
+        thresholds["mypy_strict"] = _truthy(spec["mypy_strict"], default=False)
     if "pytest_parallel" in spec:
-        thresholds["pytest_parallel"] = spec["pytest_parallel"]
+        thresholds["pytest_parallel"] = _truthy(spec["pytest_parallel"], default=False)
     if "sanity_scenarios_per_phase" in spec:
         thresholds["sanity_scenarios_per_phase"] = spec["sanity_scenarios_per_phase"]
-    if spec.get("security_review"):
+    if _truthy(spec.get("security_review"), default=False):
         thresholds["security_review"] = True
 
     # Per-run cap overrides. Two sources, in this precedence:
@@ -1100,12 +1151,16 @@ def route(stage: str, run_dir: Path, phase: int | None, state: dict, eff: dict) 
     spec = state.get("interview_spec", {})
     interventions = spec.get("interventions", {}) or {}
 
+    # Coerce every value through `_truthy` — spec.md may store toggles as
+    # YAML on/off which can land as the JSON string "off" after a careless
+    # merge into state.interview_spec; plain truthy checks would then fire
+    # the gate the user explicitly disabled.
     intervention_map = {
-        "planning":     interventions.get("planning", True),
-        "requirements": interventions.get("requirements", True),
-        "phase-split":  interventions.get("phase_split", True),
-        "design":       interventions.get("design_per_phase", False),
-        "pr-create":    interventions.get("pr_per_phase", True),  # post-stage approval of pr.md draft (push happens in pr-publish)
+        "planning":     _truthy(interventions.get("planning"),         default=True),
+        "requirements": _truthy(interventions.get("requirements"),     default=True),
+        "phase-split":  _truthy(interventions.get("phase_split"),      default=True),
+        "design":       _truthy(interventions.get("design_per_phase"), default=False),
+        "pr-create":    _truthy(interventions.get("pr_per_phase"),     default=True),  # post-stage approval of pr.md draft (push happens in pr-publish)
     }
 
     # code-review: read verdict and route

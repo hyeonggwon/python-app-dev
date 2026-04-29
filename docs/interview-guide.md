@@ -39,13 +39,15 @@
 
 | 키 | 지점 | 기본값 |
 |---|---|---|
-| `interventions.planning` | 기획 직후 | `on` |
-| `interventions.requirements` | 요구사항 직후 | `on` |
-| `interventions.phase_split` | Phase 분리 직후 | `on` |
-| `interventions.design_per_phase` | 각 phase의 design 직후 | `off` |
-| `interventions.pr_per_phase` | 각 phase의 pr-create 직후 | `on` |
+| `interventions.planning` | 기획 직후 | `true` |
+| `interventions.requirements` | 요구사항 직후 | `true` |
+| `interventions.phase_split` | Phase 분리 직후 | `true` |
+| `interventions.design_per_phase` | 각 phase의 design 직후 | `false` |
+| `interventions.pr_per_phase` | 각 phase의 pr-create 직후 | `true` |
 
-사용자가 빠르게 진행하고 싶으면 모두 끄고, 신중히 가고 싶으면 모두 켤 수 있다.
+사용자가 빠르게 진행하고 싶으면 모두 `false`, 신중히 가고 싶으면 모두 `true` 로 둔다.
+
+> 모든 boolean 토글은 **`true`/`false` 정본**으로 적는다. orchestrator 의 `_truthy` 가 `on/off`/`yes/no`/`1/0` 도 받아 주지만, spec.md → state.json.interview_spec 머지 단계에서 LLM 이 문자열로 그대로 흘려보내면 사고가 나기 쉬우므로 정본 표기는 한 가지로 못박는다.
 
 ## 4. 검증·리뷰 옵션
 
@@ -100,11 +102,11 @@ out_of_scope: |
   - 비밀번호 재설정 흐름은 별도 작업
 
 interventions:
-  planning: on
-  requirements: on
-  phase_split: on
-  design_per_phase: off
-  pr_per_phase: on
+  planning: true
+  requirements: true
+  phase_split: true
+  design_per_phase: false
+  pr_per_phase: true
 
 coverage_threshold: 70
 mypy_strict: false
