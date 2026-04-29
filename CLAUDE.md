@@ -4,7 +4,7 @@
 
 ## 권위 파일 위치 (0-1)
 
-다음은 stage 프롬프트가 매 호출마다 권위로 삼는 정본이다. 이 위치를 옮기면 stage 프롬프트의 `Inputs` 섹션과 `validate_harness.py`의 매핑도 함께 옮겨야 한다.
+다음은 stage 프롬프트가 매 호출마다 권위로 삼는 정본이다. 이 위치를 옮기면 stage 프롬프트의 `Inputs` 섹션과 `scripts/tests/test_invariants.py`의 매핑도 함께 옮겨야 한다.
 
 - `docs/task-spec.md` — 작업 명세
 - `docs/tacit-knowledge.md` — 확정된 암묵지 (도구 체인, 자가 교정 정책, 코드리뷰 매핑, git 규칙, 임계치 기본값)
@@ -33,16 +33,21 @@
 
 ## 검사기
 
-`.githooks/pre-commit`이 모든 커밋 직전에 `scripts/validate_harness.py`를 돌린다. 다음을 자동으로 잡는다:
+`.githooks/pre-commit`이 모든 커밋 직전에 `python3 -m pytest scripts/tests/` 를 돌린다. 두 종류로 나뉜다.
+
+**`scripts/tests/test_invariants.py`** — 정본 파일 간 cross-file 정합성:
 
 - stage 프롬프트의 Bash 명령 ↔ `STAGE_TOOLS`의 `Bash(...)` 패턴 (shell builtins 제외)
 - 프롬프트의 `{token}` ↔ orchestrator의 치환 맵
-- feedback 경로 ↔ 그 stage의 Inputs
-- 모든 stage가 `STAGE_TOOLS`에 등록됨
-- 멀티-아웃풋 stage의 aux 파일 ↔ 프롬프트가 그 파일을 만들라고 명시
+- 모든 stage가 `STAGE_TOOLS` / `STAGE_PRIMARY_OUTPUT` / `STAGE_OWNED_PATTERNS` / `STAGE_MARKER` 에 등록됨
+- 멀티-아웃풋 stage의 aux 파일 ↔ 프롬프트가 그 파일을 만들라고 명시 ↔ `STAGE_OWNED_PATTERNS` 에 포함
 - verdict 라벨 enum ↔ 리뷰 stage 프롬프트가 가르치는 라벨
-- decision 템플릿 키 ↔ orchestrator 소비
+- 게이트 status enum ↔ orchestrate 의 `GATE_PASSING_STATUSES` ∪ `GATE_FAILING_STATUSES`
+- `route()` 가 게이트 결과를 `gate_is_passing()` 으로만 읽는지 (raw `.get('passed')` 금지)
 - short/long-form stage 디렉토리명 단일화
+- 정본 파일에 절대 경로 (`/home/...`, `/Users/...`) 박힘 금지
+
+**`scripts/tests/test_handle_resume.py` / `test_routing.py` / `test_run_gate.py` / `test_gate_cross_check.py` / `test_front_matter.py`** — orchestrator·run_gate 의 순수 함수 단위 테스트 (state machine, 라우팅, 게이트 status 매핑, front-matter 파싱).
 
 검사 실패 시 커밋 차단. `--no-verify`로 우회하지 않는다.
 
@@ -80,4 +85,4 @@
    - `STAGE_REQUIRED_AUX_OUTPUTS[<stage>]` (멀티-아웃풋이면)
    - 카운터 키 (필요시)
    - 라우팅 분기
-4. `git commit` — pre-commit 검사기가 누락된 부분을 잡아준다
+4. `git commit` — pre-commit pytest (`scripts/tests/`) 가 누락된 부분을 잡아준다

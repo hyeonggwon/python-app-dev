@@ -42,7 +42,7 @@ import tomllib  # noqa: F401  (kept for parity with detect_toolchain)
 
 
 # ---------------------------------------------------------------------------
-# Stage tables (single source of truth — validate_harness.py cross-checks these)
+# Stage tables (single source of truth — scripts/tests/test_invariants.py cross-checks these)
 # ---------------------------------------------------------------------------
 
 STAGE_DIRS = {

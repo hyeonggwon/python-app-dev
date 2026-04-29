@@ -13,9 +13,9 @@ cd python-app-dev
 ```
 
 `install.sh` 가 하는 일:
-- `git core.hooksPath = .githooks` (`validate_harness.py` 강제)
+- `git core.hooksPath = .githooks` (커밋 직전 pytest 강제)
 - `python3 / claude / git` 필수 확인, `uv / gh` 는 옵션 경고
-- `validate_harness.py` 1회 실행으로 정합성 확인
+- `python3 -m pytest scripts/tests/` 1회 실행으로 정합성 확인
 
 ## Quick Start
 
@@ -61,10 +61,10 @@ Claude Code 메인 세션에서:
 │   ├── init_run.py            # outputs/<run-id>/ + state.json 초기화
 │   ├── run_gate.py            # lint-test 게이트 평가
 │   ├── detect_toolchain.py    # uv / poetry / pip 자동 감지
-│   ├── validate_harness.py    # pre-commit 정합성 검사기
 │   ├── config.yaml            # cap / 임계치 기본값
-│   └── prompts/               # 12 stage 프롬프트 정본
-└── .githooks/pre-commit       # validate_harness.py 강제
+│   ├── prompts/               # 12 stage 프롬프트 정본
+│   └── tests/                 # pytest — cross-file invariants + 단위 테스트
+└── .githooks/pre-commit       # 커밋 직전 pytest 강제
 ```
 
 ## 생성되는 파일
@@ -93,7 +93,7 @@ outputs/<run-id>/
 
 이 *하네스 자체* 를 수정한다면 `CLAUDE.md` 가 권위. 핵심:
 
-- `docs/` ↔ stage prompt ↔ `STAGE_TOOLS` / `STAGE_DIRS` 는 한 세트 — 한쪽만 고치면 `validate_harness.py` 가 차단
+- `docs/` ↔ stage prompt ↔ `STAGE_TOOLS` / `STAGE_DIRS` 는 한 세트 — 한쪽만 고치면 `scripts/tests/test_invariants.py` 가 차단
 - pre-commit 우회 금지 (`--no-verify` X)
 - 절대경로 (`/home/...`) 박지 마라 — `{{HARNESS_ROOT}}` / `{run_dir}` 토큰만
 - `tacit-knowledge.md` / cap 자동 수정 금지 — `delivery.md` 후보 섹션에 제안만, 사람이 결정

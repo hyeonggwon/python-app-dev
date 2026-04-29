@@ -13,9 +13,9 @@ cd python-app-dev
 ```
 
 What `install.sh` does:
-- Sets `git core.hooksPath = .githooks` (enforces `validate_harness.py`)
+- Sets `git core.hooksPath = .githooks` (enforces pytest before every commit)
 - Verifies required tools (`python3 / claude / git`); warns on optional (`uv / gh`)
-- Runs `validate_harness.py` once for sanity
+- Runs `python3 -m pytest scripts/tests/` once for sanity
 
 ## Quick Start
 
@@ -61,10 +61,10 @@ Each stage is bounded by `--allowed-tools`; `lint-test` must pass `run_gate.py` 
 │   ├── init_run.py            # creates outputs/<run-id>/ + state.json
 │   ├── run_gate.py            # lint-test gate evaluator
 │   ├── detect_toolchain.py    # auto-detects uv / poetry / pip
-│   ├── validate_harness.py    # pre-commit consistency checker
 │   ├── config.yaml            # default caps / thresholds
-│   └── prompts/               # 12 canonical stage prompts
-└── .githooks/pre-commit       # enforces validate_harness.py
+│   ├── prompts/               # 12 canonical stage prompts
+│   └── tests/                 # pytest — cross-file invariants + unit tests
+└── .githooks/pre-commit       # enforces pytest before each commit
 ```
 
 ## Generated files
@@ -93,7 +93,7 @@ outputs/<run-id>/
 
 To modify the *harness itself*, `CLAUDE.md` is authoritative. Key rules:
 
-- `docs/` ↔ stage prompts ↔ `STAGE_TOOLS` / `STAGE_DIRS` move as a set — change one and `validate_harness.py` will block
+- `docs/` ↔ stage prompts ↔ `STAGE_TOOLS` / `STAGE_DIRS` move as a set — change one and `scripts/tests/test_invariants.py` will block
 - Don't bypass pre-commit (`--no-verify` is forbidden)
 - No hard-coded absolute paths (`/home/...`) — use `{{HARNESS_ROOT}}` / `{run_dir}` tokens
 - Don't auto-edit `tacit-knowledge.md` or caps — only surface candidates in `delivery.md`; humans decide

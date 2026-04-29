@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Cross-file invariant checker + harness self-tests — must pass before any
-# commit lands. Bypassing this hook (`--no-verify`) is forbidden by CLAUDE.md.
+# Harness self-tests — must pass before any commit lands. The pytest suite
+# under scripts/tests/ covers cross-file invariants (test_invariants.py:
+# stage tables, prompt/tool coverage, gate-status enum) plus orchestrator
+# unit tests (state machine, routing, front-matter, gate JSON shape).
+# Bypassing this hook (`--no-verify`) is forbidden by CLAUDE.md.
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
-python3 "$ROOT/scripts/validate_harness.py"
-python3 -m pytest "$ROOT/scripts/tests/" -q
+exec python3 -m pytest "$ROOT/scripts/tests/" -q
