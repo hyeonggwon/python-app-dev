@@ -287,7 +287,8 @@ def save_state(run_dir: Path, state: dict) -> None:
 
 def ensure_phase_counters(state: dict, phase: int) -> None:
     keys = [
-        "lint_test_self_correct", "code_review_minor", "code_review_major",
+        "lint_test_self_correct", "lint_test_design",
+        "code_review_minor", "code_review_major",
         "sanity", "design_arch_self", "design_revise", "pr_create_revise",
     ]
     for k in keys:
@@ -1008,6 +1009,23 @@ def run_lint_test_loop(run_dir: Path, phase: int | None, state: dict, eff: dict)
         round_n = state["counters"][counter_key] + 1
         if round_n > cap:
             failing = [g["name"] for g in gate_results if not gate_is_passing(g)]
+            # Two-level cap. The in-stage `lint_test_self_correct` counter
+            # bounds one pass; the cumulative `lint_test_design` counter bounds
+            # how many times the same phase can re-enter lint-test via a
+            # design backtrack. `lint_test_design__phase_N` is NOT in
+            # IN_STAGE_RETRY_COUNTERS, so _backtrack_to does not reset it.
+            design_loop_key = f"lint_test_design__phase_{phase}"
+            design_loop_cap = int(caps.get("lint_test_design_loop", 2))
+            state["counters"][design_loop_key] = (
+                state["counters"].get(design_loop_key, 0) + 1
+            )
+            if state["counters"][design_loop_key] > design_loop_cap:
+                return _escalate(
+                    run_dir, state, "lint_test_design_cap", stage, phase,
+                    extra={"failing_gates": failing,
+                           "design_loops": state["counters"][design_loop_key],
+                           "cap": design_loop_cap},
+                )
             _backtrack_to(
                 run_dir, state, "design", phase, source="lint-test-cap",
                 body=f"lint-test self-correct cap ({cap}) reached.\nFailing gates: {failing}",

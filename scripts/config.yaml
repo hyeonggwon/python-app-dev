@@ -16,6 +16,13 @@ caps:
   # Sanity test failure → design loopback (per phase)
   sanity_loop: 2
 
+  # lint-test self-correct cap reached → design loopback (per phase, cumulative
+  # across backtracks). Bounds how many times the same phase can re-enter
+  # lint-test via design without progress. Without this, the in-stage
+  # `lint_test_self_correct` counter resets on backtrack and the only ceiling
+  # is the global `total_stages` runaway cap.
+  lint_test_design_loop: 2
+
   # User-intervention revise loops. design has two separate budgets so a
   # backtrack-driven re-entry (which legitimately resets the architect-reviewer
   # in-stage retry) does not also wipe the cumulative user-revise count.

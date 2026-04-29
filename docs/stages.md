@@ -215,7 +215,7 @@ STAGE_DIRS = {
 | **프롬프트 스케치** | (1) `pr.md` 선두의 `<!-- pr-title: ... -->` 코멘트에서 제목 추출 (2) HEAD 가 `branch.txt` 와 일치하는지 확인 (3) `git push -u origin <branch>` (4) `gh pr create --title <title> --body-file pr.md --base <base> [--reviewer ...] [--label ...]` (5) 출력된 PR URL 을 `pr-url.txt` 에 기록. 재시도 (예: backtrack 후 재진입) 로 PR 이 이미 존재하면 `gh pr view <branch> --json url --jq .url` 로 회수해 기록 — **PR 닫고 새로 만들지 않는다**. 마지막 줄 `PR_PUBLISH_DONE: ...` |
 | **참조** | (없음) |
 | **검증** | (a) `pr-url.txt` 존재 + 유효한 GitHub PR URL 정규식 (b) marker |
-| **라우팅** | `pr_mode == manual` 이면 orchestrator 가 이 stage 를 호출하지 않는다 (`_default_next_stage` 에서 `pr-create` 다음을 `next-phase-or-delivery` 로 단락) |
+| **라우팅** | `pr_mode == manual` 이면 orchestrator 가 이 stage 를 호출하지 않는다 (`_default_next_stage` 가 `pr-create` 다음으로 `None` 을 반환하고, 메인 세션이 다음 phase 또는 delivery 로 진행한다) |
 | **루프백 + cap** | 자기 재실행 카운터 없음. 실패 시 escalation |
 | **사용자 개입** | (없음 — 사용자 검토는 ⑤ 에서 끝) |
 | **도구** | `Read, Write, Bash(git push:*, git rev-parse:*, gh pr:*, gh repo:*)` |

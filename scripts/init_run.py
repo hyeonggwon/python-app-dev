@@ -56,10 +56,11 @@ def initial_state(run_id: str) -> dict:
             "total_stages": 0,
             # Per-phase counters added lazily by ensure_phase_counters when a
             # phase first enters a phase-level stage. Keys:
-            #   "lint_test_self_correct__phase_N": gate self-correction rounds
+            #   "lint_test_self_correct__phase_N": gate self-correction rounds (resets on backtrack)
+            #   "lint_test_design__phase_N":       lint-test cap → design loops (cumulative)
             #   "code_review_minor__phase_N":      cumulative minor verdicts
             #   "code_review_major__phase_N":      cumulative major verdicts
-            #   "sanity__phase_N":                 sanity-test re-runs
+            #   "sanity__phase_N":                 sanity-test re-runs (cumulative)
             #   "design_arch_self__phase_N":       architect-reviewer self-loop (resets on backtrack)
             #   "design_revise__phase_N":          user revise on design (cumulative across backtracks)
             #   "pr_create_revise__phase_N":       pr-create user revise

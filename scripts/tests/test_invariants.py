@@ -499,3 +499,100 @@ def test_route_does_not_read_passed_bool_directly():
         f"orchestrate.route() reads `.get('passed')` directly at line(s) {bad} — "
         f"must use gate_is_passing() so skipped_fail is treated as a fail"
     )
+
+
+# ---------------------------------------------------------------------------
+# 15. Doc/code consistency (pins fixes from the harness self-review)
+# ---------------------------------------------------------------------------
+
+def _docs_and_prompts_files() -> list[Path]:
+    return list(DOCS_DIR.glob("*.md")) + list(PROMPTS_DIR.glob("*.md")) + [CLAUDE_MD]
+
+
+@pytest.mark.parametrize(
+    "path",
+    _docs_and_prompts_files(),
+    ids=lambda p: str(p.relative_to(ROOT)),
+)
+def test_no_legacy_sentinel_in_docs(path):
+    """`_default_next_stage` returns None for `pr-create` in pr_mode=manual.
+    No doc may describe this as the legacy sentinel string `next-phase-or-delivery`
+    — that name is not a real stage and would silently break the documented
+    `next` contract if any reader implemented against it."""
+    text = path.read_text(encoding="utf-8")
+    assert "next-phase-or-delivery" not in text, (
+        f"{path.relative_to(ROOT)} still references legacy sentinel "
+        f"`next-phase-or-delivery`; orchestrator returns None — describe "
+        f"that explicitly"
+    )
+
+
+def test_tacit_knowledge_verdict_section_points_to_verdict_json():
+    """The orchestrator parses `phase-{N}/verdict.json` for code-review verdict;
+    `review.md` is the human-readable companion. Earlier doc claimed verdict
+    lived in review.md, which would mislead anyone tracing the routing path."""
+    p = DOCS_DIR / "tacit-knowledge.md"
+    text = p.read_text(encoding="utf-8")
+    section = re.search(
+        r"## 6\..*?(?=^## |\Z)", text, re.MULTILINE | re.DOTALL,
+    )
+    assert section is not None, "tacit-knowledge.md §6 not found"
+    body = section.group(0)
+    assert "verdict.json" in body, (
+        "tacit-knowledge.md §6 must reference verdict.json as the authoritative "
+        "verdict source — orchestrator parses verdict.json directly"
+    )
+
+
+def test_tacit_knowledge_gate_json_example_includes_status_field():
+    """The gate JSON schema example in §2 must show `status` — that's the
+    primary routing field (gate_is_passing reads it first). Earlier example
+    showed only `passed: true`, which would steer new contributors toward the
+    legacy single-bool model that conflated skipped_fail with success."""
+    p = DOCS_DIR / "tacit-knowledge.md"
+    text = p.read_text(encoding="utf-8")
+    fences = re.findall(r"```json\n(.*?)\n```", text, re.DOTALL)
+    assert fences, "no ```json fenced block found in tacit-knowledge.md"
+    gate_examples = [b for b in fences if '"name"' in b and '"exit_code"' in b]
+    assert gate_examples, "no gate-result-shaped JSON example found in §2"
+    for body in gate_examples:
+        assert '"status"' in body, (
+            "gate JSON example must include the `status` field "
+            "(passed|failed|skipped_ok|skipped_fail) — it is the primary "
+            "routing signal, not the legacy `passed` bool"
+        )
+
+
+def test_lint_test_design_loop_cap_in_config():
+    """Pin the new cumulative cap added to fix the missing
+    lint-test → design loopback bound. If this key disappears from
+    config.yaml, the code falls back to the hardcoded default and the docs
+    (tacit-knowledge §4-2 / stages.md P4) silently lose their config tie-in."""
+    cfg_path = ROOT / "scripts" / "config.yaml"
+    text = cfg_path.read_text(encoding="utf-8")
+    assert re.search(r"^\s*lint_test_design_loop\s*:\s*\d+", text, re.MULTILINE), (
+        "scripts/config.yaml must declare `lint_test_design_loop` under caps; "
+        "this is the cumulative cap for lint-test → design backtracks within "
+        "a phase (cap key referenced by run_lint_test_loop)"
+    )
+
+
+def test_lint_test_design_counter_initialized_in_ensure_phase_counters():
+    """ensure_phase_counters must seed `lint_test_design` so the increment
+    line in run_lint_test_loop never KeyErrors on first cap-hit."""
+    consts = _module_constants(ORCHESTRATOR, set())  # parse all asgn
+    tree = ast.parse(ORCHESTRATOR.read_text(encoding="utf-8"))
+    fn = next(
+        (n for n in ast.walk(tree)
+         if isinstance(n, ast.FunctionDef) and n.name == "ensure_phase_counters"),
+        None,
+    )
+    assert fn is not None, "ensure_phase_counters not found"
+    keys: set[str] = set()
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            keys.add(node.value)
+    assert "lint_test_design" in keys, (
+        "ensure_phase_counters must include `lint_test_design` so the "
+        "cumulative cap counter is seeded on phase entry"
+    )
